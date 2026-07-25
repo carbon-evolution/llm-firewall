@@ -1,5 +1,14 @@
 //! `llm-firewall-core` — the pure-Rust detection engine.
 //! No I/O lives here; detectors return `Finding`s and the scorer aggregates them.
 
+mod context;
+mod detector;
+mod finding;
 mod severity;
+
+pub mod detectors;
+
+pub use context::{Context, Direction};
+pub use detector::Detector;
+pub use finding::Finding;
 pub use severity::Severity;
