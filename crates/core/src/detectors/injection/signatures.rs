@@ -8,16 +8,12 @@ use crate::{Finding, Severity};
 
 /// (compiled pattern, severity, human label). Confidence for a signature hit is high (0.9)
 /// because these are curated, low-false-positive patterns.
-// used by InjectionDetector in Task 6
-#[allow(dead_code)]
 struct Signature {
     re: Regex,
     severity: Severity,
     label: &'static str,
 }
 
-// used by InjectionDetector in Task 6
-#[allow(dead_code)]
 static SIGNATURES: LazyLock<Vec<Signature>> = LazyLock::new(|| {
     let raw: &[(&str, Severity, &str)] = &[
         (
@@ -56,8 +52,6 @@ static SIGNATURES: LazyLock<Vec<Signature>> = LazyLock::new(|| {
 });
 
 /// Scan `text` for signature matches, returning one `Finding` per match with its byte span.
-// used by InjectionDetector in Task 6
-#[allow(dead_code)]
 pub(crate) fn scan(text: &str) -> Vec<Finding> {
     let mut out = Vec::new();
     for sig in SIGNATURES.iter() {

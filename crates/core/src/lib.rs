@@ -10,5 +10,6 @@ pub mod detectors;
 
 pub use context::{Context, Direction};
 pub use detector::Detector;
+pub use detectors::injection::InjectionDetector;
 pub use finding::Finding;
 pub use severity::Severity;

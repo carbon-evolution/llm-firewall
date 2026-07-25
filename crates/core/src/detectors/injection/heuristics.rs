@@ -24,8 +24,6 @@ fn delimiter_hits(text: &str) -> usize {
 }
 
 /// Compute a heuristic score in `[0.0, 1.0]`. Pure function so it is trivially testable.
-// used by InjectionDetector in Task 6
-#[allow(dead_code)]
 pub(crate) fn score_text(text: &str) -> f32 {
     let mut score = 0.0f32;
 
@@ -39,8 +37,6 @@ pub(crate) fn score_text(text: &str) -> f32 {
 }
 
 /// Emit a single aggregate finding when the heuristic score crosses a floor.
-// used by InjectionDetector in Task 6
-#[allow(dead_code)]
 pub(crate) fn scan(text: &str) -> Vec<Finding> {
     let score = score_text(text);
     if score < 0.30 {
