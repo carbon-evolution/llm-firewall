@@ -4,6 +4,7 @@
 mod context;
 mod detector;
 mod finding;
+mod scoring;
 mod severity;
 
 pub mod detectors;
@@ -12,4 +13,5 @@ pub use context::{Context, Direction};
 pub use detector::Detector;
 pub use detectors::injection::InjectionDetector;
 pub use finding::Finding;
+pub use scoring::{score_findings, RiskScore};
 pub use severity::Severity;
