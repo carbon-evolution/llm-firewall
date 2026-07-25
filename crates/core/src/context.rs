@@ -1,6 +1,7 @@
 //! The unit of text a detector inspects, plus its direction of travel.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Direction {
     Input,
     Output,
@@ -14,11 +15,17 @@ pub struct Context<'a> {
 
 impl<'a> Context<'a> {
     pub fn input(text: &'a str) -> Self {
-        Self { text, direction: Direction::Input }
+        Self {
+            text,
+            direction: Direction::Input,
+        }
     }
 
     pub fn output(text: &'a str) -> Self {
-        Self { text, direction: Direction::Output }
+        Self {
+            text,
+            direction: Direction::Output,
+        }
     }
 }
 

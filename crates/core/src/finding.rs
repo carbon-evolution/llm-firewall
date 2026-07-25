@@ -5,7 +5,7 @@ use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Severity;
+use crate::{Direction, Severity};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
@@ -18,6 +18,8 @@ pub struct Finding {
     pub span: Option<Range<usize>>,
     /// Human-readable description.
     pub label: String,
+    /// Direction of travel this finding was observed on.
+    pub direction: Direction,
 }
 
 impl Finding {
@@ -33,12 +35,19 @@ impl Finding {
             confidence: confidence.clamp(0.0, 1.0),
             span: None,
             label: label.into(),
+            direction: Direction::Input,
         }
     }
 
     /// Builder: attach a byte span.
     pub fn with_span(mut self, span: Range<usize>) -> Self {
         self.span = Some(span);
+        self
+    }
+
+    /// Builder: set the direction of travel this finding was observed on.
+    pub fn with_direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
         self
     }
 }
@@ -55,6 +64,7 @@ mod tests {
         assert_eq!(f.confidence, 1.0); // clamped
         assert_eq!(f.span, None);
         assert_eq!(f.label, "override phrase");
+        assert_eq!(f.direction, Direction::Input);
     }
 
     #[test]
