@@ -14,9 +14,15 @@ pub struct RiskScore {
     pub reasons: Vec<String>,
 }
 
-/// Per-finding contribution in `[0.0, 1.0)`.
+/// Per-finding contribution in `[0.0, 1.0)`. Non-finite confidence (possible only via
+/// direct struct construction, bypassing `Finding::new`'s clamp) contributes 0 rather
+/// than poisoning the whole product to NaN → a silently-zero score.
 fn contribution(f: &Finding) -> f32 {
-    (f.severity.weight() * f.confidence).clamp(0.0, 1.0)
+    let c = f.severity.weight() * f.confidence;
+    if !c.is_finite() {
+        return 0.0;
+    }
+    c.clamp(0.0, 1.0)
 }
 
 /// Aggregate findings into a `RiskScore`. Empty input -> score 0.
@@ -79,6 +85,21 @@ mod tests {
         let lows: Vec<Finding> = (0..10).map(|_| f(Severity::Low, 1.0, "low")).collect();
         let one_crit = vec![f(Severity::Critical, 1.0, "crit")];
         assert!(score_findings(&one_crit).score >= score_findings(&lows).score);
+    }
+
+    #[test]
+    fn non_finite_confidence_does_not_collapse_score() {
+        // A malformed finding (NaN confidence via direct struct construction) must not
+        // poison the aggregate to a silently-zero score.
+        let good = f(Severity::High, 1.0, "good"); // contributes 0.85 -> 85
+        let bad = Finding {
+            detector: "test".into(),
+            severity: Severity::Critical,
+            confidence: f32::NAN,
+            span: None,
+            label: "bad".into(),
+        };
+        assert_eq!(score_findings(&[good, bad]).score, 85);
     }
 
     #[test]
