@@ -3,8 +3,6 @@
 use std::collections::HashMap;
 
 /// Shannon entropy (bits per byte) of a string. Empty -> 0.0.
-// used by SecretDetector (Task 2)
-#[allow(dead_code)]
 pub(crate) fn shannon_entropy(s: &str) -> f32 {
     if s.is_empty() {
         return 0.0;
