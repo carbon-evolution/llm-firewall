@@ -25,8 +25,6 @@ pub(crate) fn shannon_entropy(s: &str) -> f32 {
 /// Luhn checksum validity over the digits found in `s`. Requires 13–19 digits.
 // used by PiiDetector (Task 3)
 #[allow(dead_code)]
-// clippy 1.97 flags `sum % 10 == 0`; keep the verbatim algorithm
-#[allow(clippy::manual_is_multiple_of)]
 pub(crate) fn luhn_valid(s: &str) -> bool {
     let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
     if !(13..=19).contains(&digits.len()) {
@@ -45,7 +43,7 @@ pub(crate) fn luhn_valid(s: &str) -> bool {
         sum += x;
         alt = !alt;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 #[cfg(test)]
