@@ -86,4 +86,21 @@ mod tests {
         let blob = "aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IHN0cmluZyE=";
         assert!(score_text(blob) >= 0.30);
     }
+
+    #[test]
+    fn banding_and_confidence_are_locked() {
+        // Intentional design decision (to be tuned against NotInject/benign corpora in the
+        // benchmark phase): a single weak imperative reaches the 0.30 floor and emits a LOW
+        // finding. Low impact (risk contribution ~0.09) and tempered by later stages.
+        let low = scan("please act as a translator");
+        assert_eq!(low.len(), 1);
+        assert_eq!(low[0].severity, Severity::Low);
+        assert!((low[0].confidence - score_text("please act as a translator")).abs() < 1e-6);
+
+        // Medium band: base64 blob (0.30) + one imperative "ignore" (0.30) = 0.60 -> Medium.
+        let text = "ignore this aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IHN0cmluZyE=";
+        let med = scan(text);
+        assert_eq!(med.len(), 1);
+        assert_eq!(med[0].severity, Severity::Medium);
+    }
 }
