@@ -6,6 +6,7 @@ mod detector;
 mod finding;
 mod scoring;
 mod severity;
+mod util;
 
 pub mod detectors;
 
