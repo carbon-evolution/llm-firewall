@@ -4,6 +4,7 @@
 mod context;
 mod detector;
 mod finding;
+mod masking;
 mod scoring;
 mod severity;
 mod util;
@@ -16,5 +17,6 @@ pub use detectors::injection::InjectionDetector;
 pub use detectors::pii::PiiDetector;
 pub use detectors::secret::SecretDetector;
 pub use finding::Finding;
+pub use masking::mask;
 pub use scoring::{score_findings, RiskScore};
 pub use severity::Severity;
