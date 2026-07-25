@@ -156,7 +156,7 @@ pub(crate) fn luhn_valid(s: &str) -> bool {
         sum += x;
         alt = !alt;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 #[cfg(test)]
@@ -558,8 +558,12 @@ pub fn mask(text: &str, findings: &[Finding]) -> String {
         if span.start < cursor {
             continue; // overlaps an already-masked region
         }
-        if span.start > text.len() || span.end > text.len() {
-            continue; // defensive: stale span
+        if span.start > text.len()
+            || span.end > text.len()
+            || !text.is_char_boundary(span.start)
+            || !text.is_char_boundary(span.end)
+        {
+            continue; // defensive: stale or non-char-boundary span (never panic on bad input)
         }
         out.push_str(&text[cursor..span.start]);
         out.push_str(&token);
@@ -596,6 +600,25 @@ mod tests {
         let text = "nothing to mask";
         let findings = vec![Finding::new("injection", Severity::High, 0.9, "x")];
         assert_eq!(mask(text, &findings), text);
+    }
+
+    #[test]
+    fn overlapping_spans_keep_longest_earliest() {
+        // Nested spans: the earliest-starting longest span wins; the inner one is dropped.
+        let text = "SECRETVALUE tail";
+        let findings = vec![
+            Finding::new("secret.aws_key", Severity::Critical, 0.95, "outer").with_span(0..11),
+            Finding::new("secret.generic", Severity::Low, 0.5, "inner").with_span(2..7),
+        ];
+        assert_eq!(mask(text, &findings), "‹AWS_KEY› tail");
+    }
+
+    #[test]
+    fn non_char_boundary_span_is_skipped_not_panicked() {
+        // A span landing inside a multibyte char must be skipped, never panic.
+        let text = "héllo"; // 'é' occupies bytes 1..3
+        let findings = vec![Finding::new("pii.x", Severity::Low, 0.5, "x").with_span(2..4)];
+        assert_eq!(mask(text, &findings), text); // unchanged, no panic
     }
 }
 ```
