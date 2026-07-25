@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust, `regex`, std `LazyLock`. Depends on Plan 1 (`Finding`, `Severity`, `Detector`, `Context`).
 
-**Prerequisite:** Plan 1 merged (green `llm-firewall-core`).
+**Prerequisite:** Plan 1 complete on branch `feat/core-detection` (green `llm-firewall-core`, NOT yet merged — Plan 2 continues on the same branch; merge happens after Plan 2).
 
 ---
 
@@ -17,13 +17,91 @@
 ```
 crates/core/src/
 ├── lib.rs                         # + module wiring/re-exports (modify)
+├── context.rs                     # + Direction serde derive (modify, Task 0)
+├── finding.rs                     # + direction provenance field (modify, Task 0)
 ├── util.rs                        # NEW: shannon_entropy, luhn_valid
 ├── masking.rs                     # NEW: mask(text, &[Finding]) -> String
 └── detectors/
     ├── mod.rs                     # + pub mod secret; pub mod pii; (modify)
-    ├── secret.rs                  # NEW: SecretDetector
-    └── pii.rs                     # NEW: PiiDetector
+    ├── injection/mod.rs           # + stamp ctx.direction on findings (modify, Task 0)
+    ├── secret.rs                  # NEW: SecretDetector (stamps direction)
+    └── pii.rs                     # NEW: PiiDetector (stamps direction)
 ```
+
+**Convention adopted in Task 0:** every `Detector::inspect` stamps `ctx.direction` onto each
+finding it returns (`for f in &mut out { f.direction = ctx.direction; }` just before returning). All
+detectors in this plan (secret, pii) must follow it. So must every future detector.
+
+---
+
+## Task 0: Add `direction` provenance to `Finding`
+
+Rationale (from Plan 1 final review): findings must record whether they came from input or output,
+so the proxy audit log (Plan 5) and output-side leakage detection (this plan) can distinguish them.
+Adding the field now is cheap; retrofitting after more detectors + serialized records exist is not.
+
+**Files:**
+- Modify: `crates/core/src/context.rs`, `crates/core/src/finding.rs`,
+  `crates/core/src/detectors/injection/mod.rs`, `crates/core/src/scoring.rs` (test only)
+
+- [ ] **Step 1: Make `Direction` (de)serializable**
+
+In `crates/core/src/context.rs`, change the `Direction` derive/attribute to:
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    Input,
+    Output,
+}
+```
+
+- [ ] **Step 2: Add the `direction` field to `Finding`**
+
+In `crates/core/src/finding.rs`: import `Direction` (`use crate::{Direction, Severity};`), add a
+`pub direction: Direction` field, default it to `Direction::Input` in `new()`, and add a builder:
+```rust
+    /// Builder: set the direction of travel this finding was observed on.
+    pub fn with_direction(mut self, direction: Direction) -> Self {
+        self.direction = direction;
+        self
+    }
+```
+Update the `clamps_confidence_and_sets_fields` test to also assert `f.direction == Direction::Input`.
+
+- [ ] **Step 3: Stamp direction in the injection detector**
+
+In `crates/core/src/detectors/injection/mod.rs`, in `inspect`, stamp direction before returning:
+```rust
+    fn inspect(&self, ctx: &Context) -> Vec<Finding> {
+        let mut findings = signatures::scan(ctx.text);
+        findings.extend(heuristics::scan(ctx.text));
+        for f in &mut findings {
+            f.direction = ctx.direction;
+        }
+        findings
+    }
+```
+(If the `ml` feature block exists, stamp after it too — but on this branch it does not yet.)
+
+- [ ] **Step 4: Fix the scorer's struct-literal test**
+
+In `crates/core/src/scoring.rs`, the `non_finite_confidence_does_not_collapse_score` test builds a
+`Finding` via struct literal; add `direction: llm_firewall_core::Direction::Input` — or, since it's
+in-crate, `direction: crate::Direction::Input` — to that literal so it still compiles.
+
+- [ ] **Step 5: Verify + commit**
+
+Run `cargo test --all` (expect all pass — the new e2e test in `crates/core/tests/detect_and_score.rs`
+still holds), `cargo clippy --all-targets -- -D warnings` (clean), `cargo fmt --all`.
+```bash
+git add crates/core/src/context.rs crates/core/src/finding.rs \
+        crates/core/src/detectors/injection/mod.rs crates/core/src/scoring.rs
+git commit -m "feat(core): add direction provenance to Finding"
+```
+
+> Note: Plan 4 Task 1 Step 2 originally also added the `Direction` serde derive — that step is now a
+> no-op since Task 0 does it; skip it there.
 
 ---
 
@@ -232,6 +310,9 @@ impl Detector for SecretDetector {
                     .with_span(m.start()..m.end()),
             );
         }
+        for f in &mut out {
+            f.direction = ctx.direction;
+        }
         out
     }
 }
@@ -380,6 +461,9 @@ impl Detector for PiiDetector {
                         .with_span(m.start()..m.end()),
                 );
             }
+        }
+        for f in &mut out {
+            f.direction = ctx.direction;
         }
         out
     }
