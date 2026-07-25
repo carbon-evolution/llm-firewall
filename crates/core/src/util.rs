@@ -21,8 +21,6 @@ pub(crate) fn shannon_entropy(s: &str) -> f32 {
 }
 
 /// Luhn checksum validity over the digits found in `s`. Requires 13–19 digits.
-// used by PiiDetector (Task 3)
-#[allow(dead_code)]
 pub(crate) fn luhn_valid(s: &str) -> bool {
     let digits: Vec<u32> = s.chars().filter_map(|c| c.to_digit(10)).collect();
     if !(13..=19).contains(&digits.len()) {
