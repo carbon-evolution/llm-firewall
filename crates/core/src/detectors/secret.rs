@@ -149,4 +149,32 @@ mod tests {
         ));
         assert!(f.is_empty());
     }
+
+    #[test]
+    fn flags_high_entropy_generic_token() {
+        // 30 distinct chars (~4.9 bits/byte) that match no provider rule -> secret.generic.
+        let det = SecretDetector::new();
+        let f = det.inspect(&Context::input("token aA1bB2cC3dD4eE5fF6gG7hH8iI9jJ0 end"));
+        assert!(f.iter().any(|x| x.detector == "secret.generic"));
+        assert!(
+            f.iter()
+                .find(|x| x.detector == "secret.generic")
+                .unwrap()
+                .severity
+                == Severity::Low
+        );
+    }
+
+    #[test]
+    fn rule_span_suppresses_overlapping_generic() {
+        // A high-entropy GitHub PAT is also a 24+ generic run, but the generic finding
+        // must be suppressed because it's contained in the rule span.
+        let det = SecretDetector::new();
+        let f = det.inspect(&Context::input("ghp_aA1bB2cC3dD4eE5fF6gG7hH8iI9jJ0kK1lL2"));
+        assert!(f.iter().any(|x| x.detector == "secret.github_pat"));
+        assert!(
+            f.iter().all(|x| x.detector != "secret.generic"),
+            "generic should be deduped against the rule span"
+        );
+    }
 }
