@@ -38,4 +38,18 @@ mod tests {
         assert_eq!(Context::input("hi").direction, Direction::Input);
         assert_eq!(Context::output("hi").direction, Direction::Output);
     }
+
+    #[test]
+    fn direction_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&Direction::Input).unwrap(),
+            "\"input\""
+        );
+        assert_eq!(
+            serde_json::to_string(&Direction::Output).unwrap(),
+            "\"output\""
+        );
+        let round: Direction = serde_json::from_str("\"output\"").unwrap();
+        assert_eq!(round, Direction::Output);
+    }
 }
