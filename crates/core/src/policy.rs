@@ -58,6 +58,24 @@ impl PolicySet {
     pub fn from_yaml(s: &str) -> Result<Self, serde_yaml::Error> {
         serde_yaml::from_str(s)
     }
+
+    /// First matching rule wins; otherwise the default action.
+    pub fn evaluate(&self, findings: &[Finding], score: u8, direction: Direction) -> Decision {
+        for rule in &self.policies {
+            if rule.when.matches(findings, score, direction) {
+                return Decision {
+                    action: rule.action,
+                    rule: Some(rule.name.clone()),
+                    message: rule.message.clone(),
+                };
+            }
+        }
+        Decision {
+            action: self.default,
+            rule: None,
+            message: None,
+        }
+    }
 }
 
 impl Condition {
@@ -187,5 +205,28 @@ default: allow
         assert!(c.matches(&[f("pii", Severity::Low)], 0, Direction::Input));
         assert!(c.matches(&[f("pii.email", Severity::Low)], 0, Direction::Input));
         assert!(!c.matches(&[f("piixyz", Severity::Low)], 0, Direction::Input));
+    }
+
+    #[test]
+    fn first_match_wins() {
+        let p = PolicySet::from_yaml(SAMPLE).unwrap();
+        let d = p.evaluate(&[f("injection", Severity::High)], 90, Direction::Input);
+        assert_eq!(d.action, Action::Block);
+        assert_eq!(d.rule.as_deref(), Some("block-critical-injection"));
+    }
+
+    #[test]
+    fn falls_through_to_default() {
+        let p = PolicySet::from_yaml(SAMPLE).unwrap();
+        let d = p.evaluate(&[], 0, Direction::Input);
+        assert_eq!(d.action, Action::Allow);
+        assert_eq!(d.rule, None);
+    }
+
+    #[test]
+    fn pii_masks() {
+        let p = PolicySet::from_yaml(SAMPLE).unwrap();
+        let d = p.evaluate(&[f("pii.email", Severity::Medium)], 40, Direction::Input);
+        assert_eq!(d.action, Action::Mask);
     }
 }
