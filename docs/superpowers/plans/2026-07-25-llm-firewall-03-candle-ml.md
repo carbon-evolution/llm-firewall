@@ -161,7 +161,7 @@ fn should_escalate(findings: &[Finding]) -> bool {
         .iter()
         .map(|f| f.severity)
         .max()
-        .map_or(true, |max| max < Severity::Medium)
+        .is_none_or(|max| max < Severity::Medium)
 }
 ```
 
