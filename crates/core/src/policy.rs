@@ -229,4 +229,28 @@ default: allow
         let d = p.evaluate(&[f("pii.email", Severity::Medium)], 40, Direction::Input);
         assert_eq!(d.action, Action::Mask);
     }
+
+    #[test]
+    fn first_match_wins_under_contention() {
+        // BOTH rules match a high-risk finding; the earlier rule must win,
+        // and its message must propagate.
+        let p = PolicySet::from_yaml(
+            r#"
+policies:
+  - name: high-risk-block
+    when: { risk_score_gte: 80 }
+    action: block
+    message: "high risk"
+  - name: catch-all-flag
+    when: {}
+    action: flag
+default: allow
+"#,
+        )
+        .unwrap();
+        let d = p.evaluate(&[f("injection", Severity::High)], 90, Direction::Input);
+        assert_eq!(d.action, Action::Block);
+        assert_eq!(d.rule.as_deref(), Some("high-risk-block"));
+        assert_eq!(d.message.as_deref(), Some("high risk"));
+    }
 }
