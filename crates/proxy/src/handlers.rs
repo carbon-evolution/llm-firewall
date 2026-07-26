@@ -32,6 +32,7 @@ fn error_body(msg: &str) -> serde_json::Value {
 
 pub async fn chat_completions(
     State(state): State<Shared>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ChatRequest>,
 ) -> impl IntoResponse {
     let started = Instant::now();
@@ -54,7 +55,19 @@ pub async fn chat_completions(
 
     // FORWARD upstream
     let url = format!("{}/v1/chat/completions", state.config.upstream.openai_base);
-    let upstream = state.http.post(&url).json(&decision.request).send().await;
+    let mut builder = state.http.post(&url).json(&decision.request);
+    // Propagate the caller's auth + OpenAI passthrough headers to upstream.
+    for name in [
+        "authorization",
+        "openai-organization",
+        "openai-project",
+        "openai-beta",
+    ] {
+        if let Some(v) = headers.get(name) {
+            builder = builder.header(name, v.clone());
+        }
+    }
+    let upstream = builder.send().await;
 
     let resp = match upstream {
         Ok(r) => r,
