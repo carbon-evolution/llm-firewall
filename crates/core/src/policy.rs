@@ -75,10 +75,12 @@ impl Condition {
         }
         if self.detector.is_some() || self.min_severity.is_some() {
             let any = findings.iter().any(|f| {
-                let det_ok = self
-                    .detector
-                    .as_ref()
-                    .is_none_or(|d| f.detector.starts_with(d.as_str()));
+                // Segment-bounded prefix on the `category.subtype` id scheme: "pii"
+                // matches "pii" and "pii.email" but NOT "piixyz".
+                let det_ok = self.detector.as_ref().is_none_or(|d| {
+                    let prefix = d.as_str();
+                    f.detector == prefix || f.detector.starts_with(&format!("{prefix}."))
+                });
                 let sev_ok = self.min_severity.is_none_or(|m| f.severity >= m);
                 det_ok && sev_ok
             });
@@ -152,5 +154,38 @@ default: allow
         assert!(c.matches(&[], 90, Direction::Output));
         assert!(!c.matches(&[], 90, Direction::Input));
         assert!(!c.matches(&[], 50, Direction::Output));
+    }
+
+    #[test]
+    fn severity_only_condition_matches_any_detector() {
+        let c = Condition {
+            min_severity: Some(Severity::High),
+            ..Default::default()
+        };
+        assert!(c.matches(&[f("anything", Severity::Critical)], 0, Direction::Input));
+        assert!(!c.matches(&[f("anything", Severity::Low)], 0, Direction::Input));
+    }
+
+    #[test]
+    fn empty_condition_matches_everything() {
+        // No sub-conditions set -> the default-catch rule matches any input.
+        let c = Condition::default();
+        assert!(c.matches(&[], 0, Direction::Input));
+        assert!(c.matches(
+            &[f("secret.aws_key", Severity::Critical)],
+            99,
+            Direction::Output
+        ));
+    }
+
+    #[test]
+    fn prefix_is_segment_bounded() {
+        let c = Condition {
+            detector: Some("pii".into()),
+            ..Default::default()
+        };
+        assert!(c.matches(&[f("pii", Severity::Low)], 0, Direction::Input));
+        assert!(c.matches(&[f("pii.email", Severity::Low)], 0, Direction::Input));
+        assert!(!c.matches(&[f("piixyz", Severity::Low)], 0, Direction::Input));
     }
 }
