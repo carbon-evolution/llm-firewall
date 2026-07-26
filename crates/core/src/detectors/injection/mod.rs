@@ -12,11 +12,21 @@ pub use ml::MlClassifier;
 use crate::{Context, Detector, Finding, Severity};
 
 #[derive(Default)]
-pub struct InjectionDetector;
+pub struct InjectionDetector {
+    #[cfg(feature = "ml")]
+    classifier: Option<ml::MlClassifier>,
+}
 
 impl InjectionDetector {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Attach the ML classifier (Stage C). Only available with `feature = "ml"`.
+    #[cfg(feature = "ml")]
+    pub fn with_ml(mut self, classifier: ml::MlClassifier) -> Self {
+        self.classifier = Some(classifier);
+        self
     }
 }
 
@@ -28,6 +38,30 @@ impl Detector for InjectionDetector {
     fn inspect(&self, ctx: &Context) -> Vec<Finding> {
         let mut findings = signatures::scan(ctx.text);
         findings.extend(heuristics::scan(ctx.text));
+
+        // Stage C: only escalate to the ML classifier when the cheap stages were
+        // inconclusive (keeps p99 low). Attached via `with_ml` under `feature = "ml"`.
+        #[cfg(feature = "ml")]
+        if let Some(clf) = &self.classifier {
+            if should_escalate(&findings) {
+                if let Ok(p) = clf.predict(ctx.text) {
+                    if p >= 0.5 {
+                        let severity = if p >= 0.85 {
+                            Severity::High
+                        } else {
+                            Severity::Medium
+                        };
+                        findings.push(Finding::new(
+                            "injection",
+                            severity,
+                            p,
+                            format!("ML classifier P(injection)={p:.2}"),
+                        ));
+                    }
+                }
+            }
+        }
+
         for f in &mut findings {
             f.direction = ctx.direction;
         }
@@ -37,8 +71,8 @@ impl Detector for InjectionDetector {
 
 /// Decide whether the cheap stages were inconclusive enough to warrant the ML stage.
 /// Escalate when nothing was found, or the strongest finding is below `Medium`.
-/// (Unused until Stage C is wired in Task 5.)
-#[allow(dead_code)]
+/// Only called from the `ml`-gated Stage C block above.
+#[cfg_attr(not(feature = "ml"), allow(dead_code))]
 fn should_escalate(findings: &[Finding]) -> bool {
     findings
         .iter()
