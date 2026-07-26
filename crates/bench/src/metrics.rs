@@ -54,6 +54,8 @@ impl Confusion {
             2.0 * p * r / (p + r)
         }
     }
+    /// Overall accuracy. Exposed for completeness; not part of the headline scorecard.
+    #[allow(dead_code)]
     pub fn accuracy(&self) -> f64 {
         let t = self.tp + self.tn;
         let d = t + self.fp + self.fn_;
