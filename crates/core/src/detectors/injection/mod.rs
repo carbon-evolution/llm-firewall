@@ -4,6 +4,11 @@
 mod heuristics;
 mod signatures;
 
+#[cfg(feature = "ml")]
+mod ml;
+#[cfg(feature = "ml")]
+pub use ml::MlClassifier;
+
 use crate::{Context, Detector, Finding, Severity};
 
 #[derive(Default)]
