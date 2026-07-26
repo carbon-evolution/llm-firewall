@@ -14,8 +14,7 @@ async fn streams_benign_tokens() {
         .and(path("/v1/chat/completions"))
         .respond_with(
             ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string("data: hello\n\ndata: world\n\n"),
+                .set_body_raw("data: hello\n\ndata: world\n\n", "text/event-stream"),
         )
         .mount(&server)
         .await;
@@ -49,4 +48,14 @@ async fn streams_benign_tokens() {
         resp.headers().get("content-type").unwrap(),
         "text/event-stream"
     );
+
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let s = String::from_utf8_lossy(&bytes);
+    assert!(
+        s.contains("data: hello"),
+        "expected verbatim upstream frames, got: {s}"
+    );
+    assert!(!s.contains("data: data:"), "stream was double-framed: {s}");
 }

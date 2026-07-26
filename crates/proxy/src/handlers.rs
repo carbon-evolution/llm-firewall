@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::response::sse::{Event, Sse};
+use axum::body::Body;
+use axum::http::header::CONTENT_TYPE;
+use axum::response::Response;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use futures_util::StreamExt;
 use llm_firewall_core::Firewall;
@@ -143,15 +145,16 @@ pub async fn chat_completions(
         .into_response()
 }
 
-/// Forward the upstream SSE stream, scanning a sliding window of accumulated text for
-/// output policy violations. On violation we stop and emit a final error event.
+/// Forward the upstream SSE stream VERBATIM (byte-for-byte), scanning a sliding tail
+/// window for output-policy violations. On violation we emit a terminal error frame
+/// and stop; otherwise upstream framing is preserved exactly.
 async fn stream_completions(
     state: Shared,
     request: ChatRequest,
     headers: axum::http::HeaderMap,
     request_id: String,
     started: Instant,
-) -> axum::response::Response {
+) -> Response {
     let url = format!("{}/v1/chat/completions", state.config.upstream.openai_base);
     let mut builder = state.http.post(&url).json(&request);
     for name in [
@@ -171,17 +174,22 @@ async fn stream_completions(
         }
     };
 
+    let content_type = upstream
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("text/event-stream")
+        .to_string();
+
     let window = state.config.stream_window.max(16);
-    let mut acc = String::new();
     let mut byte_stream = upstream.bytes_stream();
 
-    let sse = async_stream::stream! {
+    let body = async_stream::stream! {
+        let mut acc = String::new();
         while let Some(chunk) = byte_stream.next().await {
             let Ok(bytes) = chunk else { break };
-            let text = String::from_utf8_lossy(&bytes);
-            acc.push_str(&text);
-            // Keep only the tail window for scanning cross-chunk secrets. Trim on a
-            // char boundary so we never panic on multibyte content.
+            acc.push_str(&String::from_utf8_lossy(&bytes));
+            // Keep only the tail window; trim on a char boundary so we never panic.
             if acc.len() > window * 4 {
                 let mut cut = acc.len() - window * 4;
                 while cut < acc.len() && !acc.is_char_boundary(cut) {
@@ -190,12 +198,23 @@ async fn stream_completions(
                 acc.drain(..cut);
             }
             if decide_output(&state.firewall, &acc).is_some() {
-                yield Ok::<_, std::convert::Infallible>(
-                    Event::default().event("error").data("blocked: output policy"),
-                );
-                break;
+                AuditRecord {
+                    request_id: request_id.clone(),
+                    direction: "output".into(),
+                    decision: "block".into(),
+                    score: 0,
+                    reasons: vec!["output policy violation".into()],
+                    latency_ms: started.elapsed().as_millis(),
+                }
+                .emit();
+                // Terminal OpenAI-style error frame, then stop.
+                yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(
+                    b"data: {\"error\":{\"message\":\"blocked by llm-firewall output policy\",\"type\":\"llm_firewall_block\"}}\n\ndata: [DONE]\n\n",
+                ));
+                return;
             }
-            yield Ok(Event::default().data(&text));
+            // Pass the upstream chunk through VERBATIM (preserves SSE framing).
+            yield Ok(bytes);
         }
         AuditRecord {
             request_id,
@@ -208,5 +227,9 @@ async fn stream_completions(
         .emit();
     };
 
-    Sse::new(sse).into_response()
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, content_type)
+        .body(Body::from_stream(body))
+        .unwrap()
 }
