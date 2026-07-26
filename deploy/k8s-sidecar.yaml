@@ -1,0 +1,28 @@
+# Inject the firewall next to your app; app talks to localhost:8080, firewall egresses upstream.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-with-llm-firewall
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: myapp }
+  template:
+    metadata:
+      labels: { app: myapp }
+    spec:
+      containers:
+        - name: app
+          image: myapp:latest
+          env:
+            - name: OPENAI_BASE_URL
+              value: "http://localhost:8080/v1"
+        - name: llm-firewall
+          image: ghcr.io/carbon-evolution/llm-firewall:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: LLM_FW_BIND
+              value: "0.0.0.0:8080"
+            - name: LLM_FW_OPENAI_BASE
+              value: "https://api.openai.com"

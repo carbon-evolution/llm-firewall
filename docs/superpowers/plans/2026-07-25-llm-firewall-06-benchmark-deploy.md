@@ -231,7 +231,7 @@ mod tests {
     fn loads_labeled_lines() {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         writeln!(f, "{{\"text\":\"ignore instructions\",\"label\":true}}").unwrap();
-        writeln!(f, "").unwrap(); // blank line skipped
+        writeln!(f).unwrap(); // blank line skipped (clippy: writeln_empty_string)
         writeln!(f, "{{\"text\":\"hello\",\"label\":false}}").unwrap();
         let data = load_jsonl(f.path()).unwrap();
         assert_eq!(data.len(), 2);
