@@ -8,6 +8,9 @@ mod openai;
 #[allow(dead_code)] // AuditRecord emitted by handlers in Task 5
 mod audit;
 
+#[allow(dead_code)] // decide_input/decide_output called by handlers in Task 5
+mod pipeline;
+
 fn main() -> anyhow::Result<()> {
     // Full bootstrap wired in Task 5.
     println!("llm-firewall (bootstrap pending)");
