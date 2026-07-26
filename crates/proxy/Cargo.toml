@@ -27,6 +27,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 anyhow = "1"
 futures-util = "0.3"
+async-stream = "0.3"
 
 [dev-dependencies]
 wiremock = "0.6"
