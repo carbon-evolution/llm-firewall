@@ -72,10 +72,15 @@ fn main() -> anyhow::Result<()> {
     results.push(evaluate(&core, &data));
 
     for spec in &cli.rival {
-        if let Some(g) = parse_rival(spec) {
-            let name = g.name();
-            results.push(evaluate(&g as &dyn Guard, &data));
-            eprintln!("evaluated rival {name}");
+        match parse_rival(spec) {
+            Some(g) => {
+                let name = g.name();
+                results.push(evaluate(&g as &dyn Guard, &data));
+                eprintln!("evaluated rival {name}");
+            }
+            None => {
+                eprintln!("skipping malformed --rival (expected \"name=program args\"): {spec}")
+            }
         }
     }
 
