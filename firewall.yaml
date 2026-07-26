@@ -1,0 +1,6 @@
+bind: "0.0.0.0:8080"
+upstream:
+  openai_base: "https://api.openai.com"
+policy_file: "policies/default.yaml"
+fail_mode: fail_closed
+stream_window: 64

@@ -1,0 +1,16 @@
+policies:
+  - name: block-high-injection
+    when: { detector: injection, min_severity: high }
+    action: block
+    message: "Blocked: possible prompt injection"
+  - name: mask-pii
+    when: { detector: pii }
+    action: mask
+  - name: block-secret-output
+    when: { detector: secret, direction: output }
+    action: block
+    message: "Blocked: secret in model output"
+  - name: block-high-risk
+    when: { risk_score_gte: 85 }
+    action: block
+default: allow
