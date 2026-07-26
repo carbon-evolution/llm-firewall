@@ -201,6 +201,15 @@ git commit -m "feat(core): should_escalate gate for ML stage"
 
 ## Task 4: `MlClassifier` (feature-gated candle inference)
 
+> **Implemented 2026-07-26 with candle's `debertav2` model, not the BERT sketch below.**
+> The strong open injection classifiers (ProtectAI, Prompt-Guard, deepset) are DeBERTa-v2/v3,
+> and candle ships `DebertaV2SeqClassificationModel` with the context pooler + classifier head
+> built in — so `MlClassifier` uses `candle_transformers::models::debertav2::{Config,
+> DebertaV2SeqClassificationModel}`: `load(vb, &config, None)` (label count read from the model's
+> `id2label`), then `forward(&ids, None, None)` → logits → softmax → `P(injection)` (index 1).
+> This is cleaner (no hand-rolled linear head/pooling) and matches the real target models. The
+> BERT-based code block below is retained as the original design sketch only.
+
 **Files:**
 - Create: `crates/core/src/detectors/injection/ml.rs`
 - Modify: `crates/core/src/detectors/injection/mod.rs`

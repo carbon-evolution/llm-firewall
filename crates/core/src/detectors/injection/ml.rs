@@ -1,26 +1,31 @@
-//! Stage C: BERT-family sequence classifier via candle. Feature-gated (`ml`).
+//! Stage C: DeBERTa-v2 sequence classifier via candle. Feature-gated (`ml`).
+//!
+//! Targets the strong open prompt-injection classifiers (ProtectAI / Prompt-Guard /
+//! deepset), which are DeBERTa-v2/v3. candle's `DebertaV2SeqClassificationModel` builds
+//! the context pooler + classification head internally and returns logits directly.
 
 use anyhow::{Context as _, Result};
 use candle_core::{Device, IndexOp, Tensor};
-use candle_nn::{Linear, Module, VarBuilder};
-use candle_transformers::models::bert::{BertModel, Config};
+use candle_nn::VarBuilder;
+use candle_transformers::models::debertav2::{Config, DebertaV2SeqClassificationModel};
 use tokenizers::Tokenizer;
 
 pub struct MlClassifier {
-    model: BertModel,
-    classifier: Linear,
+    model: DebertaV2SeqClassificationModel,
     tokenizer: Tokenizer,
     device: Device,
 }
 
 impl MlClassifier {
     /// Load from a directory containing config.json, model.safetensors, tokenizer.json.
+    /// The model's config.json must include `id2label` (e.g. {0: SAFE, 1: INJECTION});
+    /// index 1 is taken as the injection class.
     pub fn load(dir: &str) -> Result<Self> {
         let device = Device::Cpu;
         let config: Config = serde_json::from_slice(
             &std::fs::read(format!("{dir}/config.json")).context("read config.json")?,
         )
-        .context("parse bert config")?;
+        .context("parse deberta-v2 config")?;
 
         let tokenizer = Tokenizer::from_file(format!("{dir}/tokenizer.json"))
             .map_err(|e| anyhow::anyhow!("load tokenizer: {e}"))?;
@@ -33,32 +38,28 @@ impl MlClassifier {
             )?
         };
 
-        let model = BertModel::load(vb.clone(), &config)?;
-        // 2-label classification head: [hidden, 2].
-        let classifier = candle_nn::linear(config.hidden_size, 2, vb.pp("classifier"))?;
+        // `id2label` (label count) is read from config.json; pass None for the override.
+        let model = DebertaV2SeqClassificationModel::load(vb, &config, None)?;
 
         Ok(Self {
             model,
-            classifier,
             tokenizer,
             device,
         })
     }
 
-    /// Return P(injection) in [0,1].
+    /// Return P(injection) in [0,1] — softmax over the label logits, index 1.
     pub fn predict(&self, text: &str) -> Result<f32> {
         let enc = self
             .tokenizer
             .encode(text, true)
             .map_err(|e| anyhow::anyhow!("tokenize: {e}"))?;
 
-        let ids = Tensor::new(enc.get_ids(), &self.device)?.unsqueeze(0)?;
-        let mask = Tensor::new(enc.get_attention_mask(), &self.device)?.unsqueeze(0)?;
-        let token_type = ids.zeros_like()?;
+        let ids = Tensor::new(enc.get_ids(), &self.device)?.unsqueeze(0)?; // [1, seq]
 
-        let sequence = self.model.forward(&ids, &token_type, Some(&mask))?; // [1, seq, hidden]
-        let cls = sequence.i((.., 0))?; // [1, hidden] — CLS token
-        let logits = self.classifier.forward(&cls)?; // [1, 2]
+        // token_type_ids + attention_mask default inside the model (zeros / all-ones),
+        // which is correct for a single, unpadded sequence.
+        let logits = self.model.forward(&ids, None, None)?; // [1, num_labels]
         let probs = candle_nn::ops::softmax(&logits, 1)?;
         let p_injection: f32 = probs.i((0, 1))?.to_scalar()?;
         Ok(p_injection.clamp(0.0, 1.0))
