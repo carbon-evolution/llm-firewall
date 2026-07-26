@@ -4,7 +4,7 @@
 mod heuristics;
 mod signatures;
 
-use crate::{Context, Detector, Finding};
+use crate::{Context, Detector, Finding, Severity};
 
 #[derive(Default)]
 pub struct InjectionDetector;
@@ -30,9 +30,38 @@ impl Detector for InjectionDetector {
     }
 }
 
+/// Decide whether the cheap stages were inconclusive enough to warrant the ML stage.
+/// Escalate when nothing was found, or the strongest finding is below `Medium`.
+/// (Unused until Stage C is wired in Task 5.)
+#[allow(dead_code)]
+fn should_escalate(findings: &[Finding]) -> bool {
+    findings
+        .iter()
+        .map(|f| f.severity)
+        .max()
+        .is_none_or(|max| max < Severity::Medium)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escalates_when_empty() {
+        assert!(super::should_escalate(&[]));
+    }
+
+    #[test]
+    fn escalates_when_only_low() {
+        let f = vec![Finding::new("injection", Severity::Low, 0.4, "weak")];
+        assert!(super::should_escalate(&f));
+    }
+
+    #[test]
+    fn does_not_escalate_on_high() {
+        let f = vec![Finding::new("injection", Severity::High, 0.9, "strong")];
+        assert!(!super::should_escalate(&f));
+    }
 
     #[test]
     fn detector_reports_name() {
