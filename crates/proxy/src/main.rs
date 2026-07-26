@@ -1,18 +1,23 @@
-// Config is exercised by unit tests now and wired into the bootstrap in Task 5.
-#[allow(dead_code)]
-mod config;
+use std::sync::Arc;
 
-#[allow(dead_code)] // ChatRequest consumed by pipeline/handlers in Tasks 4–5
-mod openai;
+use llm_firewall::config::Config;
+use llm_firewall::handlers::{AppState, Shared};
+use llm_firewall::{app, build_firewall};
 
-#[allow(dead_code)] // AuditRecord emitted by handlers in Task 5
-mod audit;
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt().json().init();
 
-#[allow(dead_code)] // decide_input/decide_output called by handlers in Task 5
-mod pipeline;
+    let cfg = Config::from_yaml(&std::fs::read_to_string("firewall.yaml")?)?;
+    let firewall = build_firewall(&cfg)?;
+    let state: Shared = Arc::new(AppState {
+        firewall,
+        http: reqwest::Client::new(),
+        config: cfg.clone(),
+    });
 
-fn main() -> anyhow::Result<()> {
-    // Full bootstrap wired in Task 5.
-    println!("llm-firewall (bootstrap pending)");
+    let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
+    tracing::info!("llm-firewall listening on {}", cfg.bind);
+    axum::serve(listener, app(state)).await?;
     Ok(())
 }

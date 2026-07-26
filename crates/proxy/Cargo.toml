@@ -6,6 +6,10 @@ license.workspace = true
 repository.workspace = true
 description = "OpenAI/Anthropic-compatible reverse proxy that inspects, scores, and filters LLM traffic."
 
+[lib]
+name = "llm_firewall"
+path = "src/lib.rs"
+
 [[bin]]
 name = "llm-firewall"
 path = "src/main.rs"
@@ -14,7 +18,7 @@ path = "src/main.rs"
 llm-firewall-core = { path = "../core" }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
-tower = "0.5"
+tower = { version = "0.5", features = ["util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = "1"
