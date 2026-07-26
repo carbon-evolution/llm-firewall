@@ -2,6 +2,9 @@
 #[allow(dead_code)]
 mod config;
 
+#[allow(dead_code)] // ChatRequest consumed by pipeline/handlers in Tasks 4–5
+mod openai;
+
 fn main() -> anyhow::Result<()> {
     // Full bootstrap wired in Task 5.
     println!("llm-firewall (bootstrap pending)");
