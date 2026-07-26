@@ -4,14 +4,29 @@
 mod heuristics;
 mod signatures;
 
-use crate::{Context, Detector, Finding};
+#[cfg(feature = "ml")]
+mod ml;
+#[cfg(feature = "ml")]
+pub use ml::MlClassifier;
+
+use crate::{Context, Detector, Finding, Severity};
 
 #[derive(Default)]
-pub struct InjectionDetector;
+pub struct InjectionDetector {
+    #[cfg(feature = "ml")]
+    classifier: Option<ml::MlClassifier>,
+}
 
 impl InjectionDetector {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Attach the ML classifier (Stage C). Only available with `feature = "ml"`.
+    #[cfg(feature = "ml")]
+    pub fn with_ml(mut self, classifier: ml::MlClassifier) -> Self {
+        self.classifier = Some(classifier);
+        self
     }
 }
 
@@ -23,6 +38,30 @@ impl Detector for InjectionDetector {
     fn inspect(&self, ctx: &Context) -> Vec<Finding> {
         let mut findings = signatures::scan(ctx.text);
         findings.extend(heuristics::scan(ctx.text));
+
+        // Stage C: only escalate to the ML classifier when the cheap stages were
+        // inconclusive (keeps p99 low). Attached via `with_ml` under `feature = "ml"`.
+        #[cfg(feature = "ml")]
+        if let Some(clf) = &self.classifier {
+            if should_escalate(&findings) {
+                if let Ok(p) = clf.predict(ctx.text) {
+                    if p >= 0.5 {
+                        let severity = if p >= 0.85 {
+                            Severity::High
+                        } else {
+                            Severity::Medium
+                        };
+                        findings.push(Finding::new(
+                            "injection",
+                            severity,
+                            p,
+                            format!("ML classifier P(injection)={p:.2}"),
+                        ));
+                    }
+                }
+            }
+        }
+
         for f in &mut findings {
             f.direction = ctx.direction;
         }
@@ -30,9 +69,38 @@ impl Detector for InjectionDetector {
     }
 }
 
+/// Decide whether the cheap stages were inconclusive enough to warrant the ML stage.
+/// Escalate when nothing was found, or the strongest finding is below `Medium`.
+/// Only called from the `ml`-gated Stage C block above.
+#[cfg_attr(not(feature = "ml"), allow(dead_code))]
+fn should_escalate(findings: &[Finding]) -> bool {
+    findings
+        .iter()
+        .map(|f| f.severity)
+        .max()
+        .is_none_or(|max| max < Severity::Medium)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escalates_when_empty() {
+        assert!(super::should_escalate(&[]));
+    }
+
+    #[test]
+    fn escalates_when_only_low() {
+        let f = vec![Finding::new("injection", Severity::Low, 0.4, "weak")];
+        assert!(super::should_escalate(&f));
+    }
+
+    #[test]
+    fn does_not_escalate_on_high() {
+        let f = vec![Finding::new("injection", Severity::High, 0.9, "strong")];
+        assert!(!super::should_escalate(&f));
+    }
 
     #[test]
     fn detector_reports_name() {
