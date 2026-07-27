@@ -10,8 +10,12 @@ of the provider and every request is checked, scored, and logged — **no app ch
 ![Release](https://img.shields.io/github/v/release/carbon-evolution/llm-firewall?sort=semver)
 ![GHCR](https://img.shields.io/badge/ghcr.io-container-2496ed?logo=docker&logoColor=white)
 ![Rust](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)
-![Tests](https://img.shields.io/badge/tests-83%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-106%20passing-brightgreen)
 ![Made with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e?logo=rust&logoColor=white)
+
+<p align="center">
+  <img src="docs/img/llm-firewall-overview.png" alt="LLM Firewall — a WAF for LLMs: your app → inspect (injection · secrets · PII) → risk score → YAML policy → block/mask → OpenAI/Claude, with output scanning" width="860">
+</p>
 
 ---
 
@@ -78,17 +82,9 @@ flowchart LR
 **The 3-stage injection detector** — cheap checks run first; the expensive AI model is only consulted
 when the fast stages are unsure, which keeps latency low:
 
-```mermaid
-flowchart LR
-    P["Prompt"] --> A["1 Regex signatures<br/>(known attack phrases)"]
-    A -->|match| HIT["🚩 flagged"]
-    A -->|no match| B["2 Heuristics<br/>(suspicious patterns)"]
-    B -->|match| HIT
-    B -->|inconclusive| C["3 DeBERTa AI model<br/>(optional, --features ml)"]
-    C -->|match| HIT
-    C -->|clean| OK["✅ clean"]
-    A -->|clean, confident| OK
-```
+<p align="center">
+  <img src="docs/img/injection-detection-flow.png" alt="3-stage injection detection: Prompt → 1 Regex signatures → 2 Heuristics → 3 DeBERTa AI model; a match at any stage is Flagged, otherwise Clean" width="860">
+</p>
 
 ## How the risk score works
 
