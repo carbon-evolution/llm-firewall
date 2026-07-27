@@ -10,6 +10,29 @@
 
 ---
 
+## Design Principles (non-negotiable)
+
+**Method: DUAL-SCAN (chosen).** The original text is always what gets scored-for-masking and
+forwarded upstream. The normalized copy is used *only* to produce extra detector signals. We do **not**
+use a single "normalize → detect+mask on the normalized text" pass, because that would rewrite the
+user's forwarded prompt (fold a legitimate Cyrillic/Greek message to Latin, decode legitimate base64),
+corrupting benign multilingual/data-bearing prompts.
+
+**Obfuscation is NEVER, by itself, a block/flag reason.** The pre-pass raises a signal *only when the
+de-obfuscated text is itself an attack* (i.e., a real detector fires on the normalized copy). A prompt
+that merely *contains* zero-width chars, homoglyphs, or base64 — but decodes to something benign — is
+forwarded unchanged and is not flagged. Rationale: an "obfuscated" prompt is very often a legitimate
+user (non-English speaker, someone pasting encoded data), so presence of obfuscation must not be
+penalized — only obfuscation that *reveals* an attack.
+
+**Consequence for correctness:** (a) the forwarded/masked text is always the user's original bytes;
+(b) the only residual risk is a *detection* false-positive, which is bounded (detection still requires
+real attack content) and is **measured** on benign controls — including a **non-ASCII/multilingual
+benign set** — in Task 5. Per-tier kill-switches exist (zero-width safest; homoglyph and base64 touch
+legitimate content, so base64 defaults off).
+
+---
+
 ## File Structure
 
 - **Create:** `crates/core/src/normalize.rs` — `Normalizer`, `Normalized`, the three tiers, unit tests.
@@ -438,7 +461,24 @@ fn merge_dedup(base: &mut Vec<Finding>, extra: Vec<Finding>) {
 }
 ```
 
-- [ ] **Step 3: Run core tests** → `cargo test -p llm-firewall-core` (all pass, incl. the two new).
+**Invariant (enforced by the code above):** signals from the evasion pass come *only* from real
+detector findings on the normalized text — there is no "text was obfuscated → block" path anywhere.
+If the normalized copy is benign, `merge_dedup` adds nothing and the outcome is identical to the
+no-normalizer case. Add a test asserting this:
+
+```rust
+#[test]
+fn obfuscation_alone_is_not_a_signal() {
+    let fw = Firewall::new(vec![Box::new(InjectionDetector::new())], policy())
+        .with_normalizer(Normalizer::default());
+    // Benign message written in Cyrillic look-alikes ("привет" style) → folds to benign Latin,
+    // no attack phrase → must NOT block/flag.
+    let out = fw.run("а е о — just greeting you", Direction::Input);
+    assert_eq!(out.decision.action, Action::Allow);
+}
+```
+
+- [ ] **Step 3: Run core tests** → `cargo test -p llm-firewall-core` (all pass, incl. the new ones).
 
 - [ ] **Step 4: Config in the proxy** (`crates/proxy/src/config.rs`)
 
@@ -548,6 +588,34 @@ safe-guard, malicious recall under obfuscation:
   base64 wrap (opt-in)       ~0              ~baseline
 ```
 
+- [ ] **Step 3b: Benign non-ASCII / multilingual FPR control (REQUIRED)**
+
+Prove the pre-pass doesn't punish legitimate "obfuscated-looking" prompts. Build a benign control
+set of real non-English text + data-bearing prompts (Cyrillic/Greek/Arabic sentences, a legit base64
+blob, emoji, mixed scripts) — all labeled benign — and run the bench **with the pre-pass on**:
+
+```bash
+python3 - <<'PY'
+import json
+benign = [
+  "Привет! Порекомендуй хороший рецепт пасты.",          # legit Russian
+  "Καλημέρα, μπορείς να μου εξηγήσεις τη φωτοσύνθεση;",   # legit Greek
+  "مرحبا، كيف يمكنني تحسين سيرتي الذاتية؟",                # legit Arabic (RTL)
+  "Here is my config: dG9rZW49YWJjMTIz (base64 of a note)",# legit base64 data
+  "Résumé feedback please — café, naïve, jalapeño 🌶️",   # accents + emoji
+]
+with open("datasets/benign_nonascii.jsonl","w") as f:
+    for t in benign: f.write(json.dumps({"text": t, "label": False})+"\n")
+print("wrote", len(benign), "benign non-ASCII controls")
+PY
+cargo run --release -p llm-firewall-bench -- --dataset datasets/benign_nonascii.jsonl
+```
+
+**Acceptance gate:** over-defense FPR on this set must stay **≈ the same as without the pre-pass**
+(target: 0 false positives). If homoglyph folding causes any FP, tighten the confusables map or ship
+that tier off by default; if base64 causes any FP, keep it opt-in (already the default). Record the
+result in the methodology note.
+
 - [ ] **Step 4: Add the scorecard section to `README.md`**
 
 New subsection **"Obfuscation resilience"** with the table above, an honest note that the corpus is
@@ -588,6 +656,15 @@ pass, and evasion findings have `span = None`; `mask` only ever sees original-te
 
 **No behavior change when off / clean:** `normalizer: None` by default in `Firewall::new`; the evasion
 pass runs only when `changed == true`. Existing tests remain valid. ✔
+
+**Dual-scan + "obfuscation ≠ block":** forwarded/masked text is always the user's original bytes; the
+evasion pass yields signal only from real detector findings on the normalized copy — never from the
+presence of obfuscation (test `obfuscation_alone_is_not_a_signal`). So legitimate multilingual/base64
+prompts pass through unharmed. ✔
+
+**Benign FPR guarded:** Task 5 Step 3b runs a non-ASCII/multilingual benign control through the
+pre-pass with an acceptance gate (FPR must not rise; target 0 FP), with per-tier kill-switches if it
+does. ✔
 
 **Type consistency:** `Normalizer`/`Normalized` names match across `normalize.rs`, `firewall.rs`,
 `config.rs` (`to_normalizer`), bench, and proxy. `merge_dedup(&mut Vec, Vec)` signature is used
