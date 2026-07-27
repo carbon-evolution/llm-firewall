@@ -1,36 +1,49 @@
 #!/usr/bin/env bash
 # Download standardized benchmark corpora and normalize to datasets/*.jsonl
 # ({"text","label"} where label=true means malicious/attack).
-# Requires: pip install datasets
+#
+# Uses the Hugging Face datasets-server REST API (JSON) via the Python standard
+# library only -- no `pip install datasets`, no pyarrow, no network auth.
 set -euo pipefail
 mkdir -p datasets
 
 python3 - <<'PY'
-from datasets import load_dataset
-import json, os
+import json, urllib.request, urllib.parse, time
 
-def dump(rows, path):
+def fetch_split(dataset, config, split):
+    rows, offset = [], 0
+    while True:
+        q = urllib.parse.urlencode(
+            {"dataset": dataset, "config": config, "split": split,
+             "offset": offset, "length": 100})
+        url = "https://datasets-server.huggingface.co/rows?" + q
+        with urllib.request.urlopen(url, timeout=30) as r:
+            d = json.load(r)
+        batch = d.get("rows", [])
+        if not batch:
+            break
+        rows += [item["row"] for item in batch]
+        total = d.get("num_rows_total", 0)
+        offset += len(batch)
+        if offset >= total:
+            break
+        time.sleep(0.2)
+    return rows
+
+def dump(pairs, path):
     with open(path, "w") as f:
-        for text, label in rows:
+        for text, label in pairs:
             f.write(json.dumps({"text": text, "label": bool(label)}) + "\n")
-    print(f"wrote {path} ({len(rows)} rows)")
+    n_mal = sum(1 for _, l in pairs if l)
+    print(f"wrote {path}: {len(pairs)} rows ({n_mal} malicious / {len(pairs)-n_mal} benign)")
 
-# A. Malicious detection — deepset/prompt-injections (label 1 = injection)
-ds = load_dataset("deepset/prompt-injections", split="test")
-dump([(r["text"], int(r["label"]) == 1) for r in ds], "datasets/deepset_injection.jsonl")
-
-# B. Over-defense / FPR — NotInject (all benign; label = False)
-try:
-    nj = load_dataset("SaFoLab-WISC/NotInject", split="train")
-    dump([(r.get("text") or r.get("prompt"), False) for r in nj], "datasets/notinject_benign.jsonl")
-except Exception as e:
-    print("NotInject fetch skipped:", e)
-
-# C. Jailbreak — JailbreakBench behaviors (label = True)
-try:
-    jb = load_dataset("JailbreakBench/JBB-Behaviors", "behaviors", split="harmful")
-    dump([(r["Goal"], True) for r in jb], "datasets/jailbreakbench.jsonl")
-except Exception as e:
-    print("JailbreakBench fetch skipped:", e)
+# deepset/prompt-injections -- label 1 = injection, 0 = benign.
+# Both train and test splits carry both classes, so this single corpus yields
+# BOTH the malicious-accuracy (recall) and the over-defense (FPR) metrics.
+pairs = []
+for split in ("train", "test"):
+    for row in fetch_split("deepset/prompt-injections", "default", split):
+        pairs.append((row["text"], int(row["label"]) == 1))
+dump(pairs, "datasets/deepset_injection.jsonl")
 PY
 echo "Datasets ready in ./datasets"

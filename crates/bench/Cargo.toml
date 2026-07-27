@@ -10,6 +10,11 @@ description = "Standardized head-to-head benchmark harness for the LLM Firewall.
 name = "llm-firewall-bench"
 path = "src/main.rs"
 
+[features]
+# Enable the DeBERTa ML stage (Stage C) when benchmarking the full system.
+# Requires the model asset under models/injection (scripts/fetch-model.sh).
+ml = ["llm-firewall-core/ml"]
+
 [dependencies]
 llm-firewall-core = { path = "../core" }
 serde = { workspace = true }

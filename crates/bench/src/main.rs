@@ -32,10 +32,26 @@ fn core_guard(threshold: u8) -> CoreGuard {
         "policies:\n  - name: b\n    when: { detector: injection, min_severity: high }\n    action: block\ndefault: allow\n",
     )
     .expect("builtin policy");
+    // With the `ml` feature, attach the DeBERTa Stage-C classifier when its asset is
+    // present; fall back to regex+heuristics (with a warning) if the model is missing.
+    #[cfg(feature = "ml")]
+    let injection = match llm_firewall_core::MlClassifier::load("models/injection") {
+        Ok(clf) => {
+            eprintln!("ML stage: loaded models/injection (DeBERTa Stage C active)");
+            InjectionDetector::new().with_ml(clf)
+        }
+        Err(e) => {
+            eprintln!("ML stage: model unavailable ({e}); using regex+heuristics only");
+            InjectionDetector::new()
+        }
+    };
+    #[cfg(not(feature = "ml"))]
+    let injection = InjectionDetector::new();
+
     CoreGuard {
         firewall: Firewall::new(
             vec![
-                Box::new(InjectionDetector::new()),
+                Box::new(injection),
                 Box::new(SecretDetector::new()),
                 Box::new(PiiDetector::new()),
             ],

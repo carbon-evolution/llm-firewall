@@ -1,3 +1,10 @@
 /target
 **/*.rs.bk
 Cargo.lock
+
+# ML model weights -- fetched on demand via scripts/fetch-model.sh (large, upstream-licensed)
+/models
+
+# Benchmark corpora + raw output -- regenerated via scripts/fetch-datasets.sh + the bench CLI
+/datasets
+/results*.json

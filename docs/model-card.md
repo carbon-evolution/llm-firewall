@@ -12,5 +12,6 @@
   (candle reads the label count from it); a `tokenizer.json` (fast tokenizer) is required.
 - **Label convention:** index 1 = injection; `predict()` runs softmax over the logits
   and returns `P(injection)`.
-- **Prerequisites to fetch (manual):** install git-lfs (`brew install git-lfs && git lfs install`)
-  and the HF CLI (`pip install "huggingface_hub[cli]"`), then run `./scripts/fetch-model.sh`.
+- **How to fetch:** run `./scripts/fetch-model.sh` (plain resumable `curl`, no HF CLI or
+  auth required for this open model, ~703 MB fp32). If the primary host throttles,
+  re-run with a mirror: `HF_HOST=https://hf-mirror.com ./scripts/fetch-model.sh`.
