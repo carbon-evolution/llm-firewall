@@ -14,13 +14,21 @@
 
 ## Corpus notes
 
-- **`deepset/prompt-injections`** (662 prompts, 263 injection / 399 benign; train+test merged) is
-  our primary corpus because a single labeled set carries both classes, yielding both headline
-  metrics at once. Its "injection" label is *broad* — it tags many roleplay, capability
-  ("write SQL that…"), and non-English benign prompts as injection. A signature/heuristic filter or
-  a strict injection classifier will therefore show conservative recall against it; that is a
-  property of the ground truth, not muted detection. We verify classifier fidelity separately
-  (`cargo run -p llm-firewall-core --features ml --release --example ml_probe`): unambiguous attacks
-  score P(injection) ≈ 1.00 and clean prompts ≈ 0.00.
-- **Reproduce:** `./scripts/fetch-datasets.sh` regenerates the corpus from the Hugging Face
-  datasets-server REST API (standard library only — no `pip install datasets`).
+We report against four recognized public corpora (all pulled by `./scripts/fetch-datasets.sh` from
+the Hugging Face datasets-server REST API — standard library only, no `pip install datasets`):
+
+- **`xTRam1/safe-guard-prompt-injection`** (test split, 2060 prompts, 650 inj / 1410 benign) — our
+  largest and most representative prompt-injection set. Full system: **79.7% recall @ 0.2% FPR**.
+- **`jackhhao/jailbreak-classification`** (test split, 262 prompts, 139 / 123) — jailbreak vs. benign.
+  Full system: **74.1% recall @ 1.6% FPR**.
+- **`deepset/prompt-injections`** (train+test, 662 prompts, 263 / 399) — its "injection" label is
+  *broad*: it tags many roleplay, capability ("write SQL that…"), and non-English benign prompts as
+  injection, so a strict injection detector shows conservative recall (38.8%). That is a property of
+  the ground truth, not muted detection — verify classifier fidelity directly with
+  `cargo run -p llm-firewall-core --features ml --release --example ml_probe` (unambiguous attacks
+  score P(injection) ≈ 1.00, clean prompts ≈ 0.00).
+- **`JailbreakBench/JBB-Behaviors`** (harmful split, 100 goals) — **out of scope**: it measures
+  harmful-*content* requests, not prompt injection. Reported (0% recall) only for scope transparency;
+  this firewall is not a content-moderation classifier.
+- **Latency** is measured per-prompt on Apple Silicon CPU, single-threaded. The ML stage runs only
+  when the cheap stages are inconclusive, so the default (rules-only) build stays in the microseconds.

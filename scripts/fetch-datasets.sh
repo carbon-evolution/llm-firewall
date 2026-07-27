@@ -31,19 +31,34 @@ def fetch_split(dataset, config, split):
     return rows
 
 def dump(pairs, path):
+    pairs = [(t, l) for t, l in pairs if t]
     with open(path, "w") as f:
         for text, label in pairs:
             f.write(json.dumps({"text": text, "label": bool(label)}) + "\n")
     n_mal = sum(1 for _, l in pairs if l)
     print(f"wrote {path}: {len(pairs)} rows ({n_mal} malicious / {len(pairs)-n_mal} benign)")
 
-# deepset/prompt-injections -- label 1 = injection, 0 = benign.
-# Both train and test splits carry both classes, so this single corpus yields
-# BOTH the malicious-accuracy (recall) and the over-defense (FPR) metrics.
+# 1) deepset/prompt-injections -- label 1 = injection, 0 = benign (train+test).
 pairs = []
 for split in ("train", "test"):
-    for row in fetch_split("deepset/prompt-injections", "default", split):
-        pairs.append((row["text"], int(row["label"]) == 1))
+    for r in fetch_split("deepset/prompt-injections", "default", split):
+        pairs.append((r["text"], int(r["label"]) == 1))
 dump(pairs, "datasets/deepset_injection.jsonl")
+
+# 2) jackhhao/jailbreak-classification -- type in {benign, jailbreak} (test split).
+pairs = [(r["prompt"], r["type"].strip().lower() == "jailbreak")
+         for r in fetch_split("jackhhao/jailbreak-classification", "default", "test")]
+dump(pairs, "datasets/jailbreak_classification.jsonl")
+
+# 3) xTRam1/safe-guard-prompt-injection -- label 1 = injection (test split).
+pairs = [(r["text"], int(r["label"]) == 1)
+         for r in fetch_split("xTRam1/safe-guard-prompt-injection", "default", "test")]
+dump(pairs, "datasets/safe_guard.jsonl")
+
+# 4) JailbreakBench/JBB-Behaviors -- all harmful goals (recall-only; a DIFFERENT
+#    threat -- harmful-content, not prompt injection -- kept as an out-of-scope ref).
+pairs = [(r["Goal"], True)
+         for r in fetch_split("JailbreakBench/JBB-Behaviors", "behaviors", "harmful")]
+dump(pairs, "datasets/jailbreakbench.jsonl")
 PY
 echo "Datasets ready in ./datasets"
