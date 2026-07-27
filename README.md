@@ -34,22 +34,22 @@ without being inspected first, and nothing comes back without being scanned on t
 
 ```mermaid
 flowchart LR
-    App["🧑‍💻 Your App"] -- "prompt" --> FW
+    App["🧑‍💻 Your App"] -- "prompt" --> IN
 
-    subgraph FW ["🛡️ LLM Firewall"]
+    subgraph FW["🛡️ LLM Firewall"]
         direction TB
-        IN["Inspect input<br/>injection · secrets · PII"] --> SC["Risk score<br/>0–100"]
-        SC --> POL{"Policy<br/>(YAML rules)"}
+        IN["Inspect input<br/>injection · secrets · PII"] --> SC["Risk score 0–100"]
+        SC --> POL{"Policy (YAML rules)"}
         POL -- "block" --> BLK["❌ 400 — request refused"]
         POL -- "mask" --> RED["✏️ redact PII → ‹EMAIL›"]
-        POL -- "allow" --> FWD
-        RED --> FWD["➡️ forward with your API key"]
+        POL -- "allow" --> FWD["➡️ forward with your API key"]
+        RED --> FWD
     end
 
-    FW -- "forwarded" --> LLM[("🤖 OpenAI / Claude")]
-    LLM -- "response" --> OUT["Scan output<br/>for leaks"]
+    FWD -- "forwarded" --> LLM[("🤖 OpenAI / Claude")]
+    LLM -- "response" --> OUT["Scan output for leaks"]
     OUT -- "clean (or streamed)" --> App
-    BLK -. "never leaves your network" .-> App
+    BLK -. "refused" .-> App
 ```
 
 **The 3-stage injection detector** — cheap checks run first; the expensive AI model is only consulted
@@ -62,9 +62,9 @@ flowchart LR
     A -->|no match| B["2 Heuristics<br/>(suspicious patterns)"]
     B -->|match| HIT
     B -->|inconclusive| C["3 DeBERTa AI model<br/>(optional, --features ml)"]
-    C --> HIT
-    C --> OK["✅ clean"]
-    A -->|clean & confident| OK
+    C -->|match| HIT
+    C -->|clean| OK["✅ clean"]
+    A -->|clean, confident| OK
 ```
 
 ---
