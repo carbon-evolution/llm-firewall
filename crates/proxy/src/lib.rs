@@ -8,7 +8,9 @@ pub mod openai;
 pub mod pipeline;
 
 use axum::{routing::post, Router};
-use llm_firewall_core::{Firewall, InjectionDetector, PiiDetector, PolicySet, SecretDetector};
+use llm_firewall_core::{
+    Firewall, InjectionDetector, OutputDetector, PiiDetector, PolicySet, SecretDetector,
+};
 
 pub use config::{Config, FailMode};
 pub use handlers::{chat_completions, messages, AppState, Shared};
@@ -24,6 +26,7 @@ pub fn build_firewall(cfg: &Config) -> anyhow::Result<Firewall> {
             Box::new(InjectionDetector::new()),
             Box::new(SecretDetector::new()),
             Box::new(PiiDetector::new()),
+            Box::new(OutputDetector::new()),
         ],
         policy,
     ))

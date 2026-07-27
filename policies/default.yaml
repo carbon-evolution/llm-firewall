@@ -16,6 +16,12 @@ policies:
     when: { detector: secret, direction: output }
     action: block
     message: "Blocked: secret in model output"
+  - name: block-dangerous-output
+    # Improper Output Handling (LLM05): dangerous shell/HTML/JS or markdown exfiltration
+    # in the model's reply.
+    when: { detector: output, direction: output, min_severity: high }
+    action: block
+    message: "Blocked: dangerous content in model output"
   - name: block-high-risk
     when: { risk_score_gte: 85 }
     action: block

@@ -6,7 +6,9 @@ mod rivals;
 mod scorecard;
 
 use clap::Parser;
-use llm_firewall_core::{Firewall, InjectionDetector, PiiDetector, PolicySet, SecretDetector};
+use llm_firewall_core::{
+    Firewall, InjectionDetector, OutputDetector, PiiDetector, PolicySet, SecretDetector,
+};
 
 use crate::evaluate::{evaluate, CoreGuard, EvalResult, Guard};
 use crate::rivals::SubprocessGuard;
@@ -62,6 +64,7 @@ fn core_guard(threshold: u8) -> CoreGuard {
                 Box::new(injection),
                 Box::new(SecretDetector::new()),
                 Box::new(PiiDetector::new()),
+                Box::new(OutputDetector::new()),
             ],
             policy,
         ),

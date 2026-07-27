@@ -19,6 +19,7 @@ pub use detector::Detector;
 pub use detectors::injection::InjectionDetector;
 #[cfg(feature = "ml")]
 pub use detectors::injection::MlClassifier;
+pub use detectors::output::OutputDetector;
 pub use detectors::pii::PiiDetector;
 pub use detectors::secret::SecretDetector;
 pub use finding::Finding;
