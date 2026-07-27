@@ -59,25 +59,9 @@ Route each format to the right upstream via config (`openai_base`, `anthropic_ba
 Think of it as a **security checkpoint sitting between your app and the AI**. Nothing reaches the LLM
 without being inspected first, and nothing comes back without being scanned on the way out.
 
-```mermaid
-flowchart LR
-    App["🧑‍💻 Your App"] -- "prompt" --> IN
-
-    subgraph FW["🛡️ LLM Firewall"]
-        direction TB
-        IN["Inspect input<br/>injection · secrets · PII"] --> SC["Risk score 0–100"]
-        SC --> POL{"Policy (YAML rules)"}
-        POL -- "block" --> BLK["❌ 400 — request refused"]
-        POL -- "mask" --> RED["✏️ redact PII → ‹EMAIL›"]
-        POL -- "allow" --> FWD["➡️ forward with your API key"]
-        RED --> FWD
-    end
-
-    FWD -- "forwarded" --> LLM[("🤖 OpenAI / Claude")]
-    LLM -- "response" --> OUT["Scan output for leaks"]
-    OUT -- "clean (or streamed)" --> App
-    BLK -. "refused" .-> App
-```
+<p align="center">
+  <img src="docs/img/request-lifecycle.png" alt="LLM Firewall request lifecycle: Your App --prompt--> Inspect input (injection · secrets · PII) → Risk score 0-100 → Policy (YAML rules); block → 400 request refused; mask → redact PII → ‹EMAIL›; allow → forward with your API key → OpenAI/Claude → response → Scan output for leaks → clean (or streamed) back to Your App" width="900">
+</p>
 
 **The 3-stage injection detector** — cheap checks run first; the expensive AI model is only consulted
 when the fast stages are unsure, which keeps latency low:
