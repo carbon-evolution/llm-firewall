@@ -183,9 +183,36 @@ upstream:
 
 ## Benchmark scorecard
 
-The field-standard way to score a prompt-injection guard is **two numbers reported together**:
-**malicious accuracy** (attacks caught) and **over-defense FPR** (benign inputs wrongly flagged).
-We evaluate against **four recognized public corpora** from Hugging Face:
+### How we test — and why
+
+**Why two numbers, always together.** A firewall is easy to fake in one direction: block
+*everything* and you "catch 100% of attacks"; block *nothing* and you "never false-alarm." Neither
+is useful. So we always report a pair:
+- **Malicious accuracy** (a.k.a. recall) — of the real attacks, how many did we catch? *Higher is better.*
+- **Over-defense FPR** — of the perfectly innocent messages, how many did we wrongly flag? *Lower is
+  better.* In production this is the number that matters most: a guard that keeps blocking normal users
+  gets turned off. (This "over-defense" framing is the field standard — see InjecGuard/PIGuard, which
+  show most guards over-block benign input.)
+
+**What we test against — and why these sets.** We use **four recognized public datasets** from Hugging
+Face rather than examples we wrote ourselves (self-made tests flatter the tool). We take each set's
+**held-out `test` split** (the standard way to avoid grading on data a model may have seen), and we use
+sets that contain **both** attacks *and* innocent prompts so we can measure both numbers on the same
+labels. One set (JailbreakBench) is deliberately *out of scope* and shown only for honesty — see the †
+note below.
+
+**How the harness works.** Every prompt is fed through the **real firewall** (same code path the proxy
+uses), and we tally a confusion matrix (caught/missed/false-alarm/correct-allow) to compute the two
+rates plus F1. Latency is measured **per prompt** on a single CPU thread and reported as p50/p99, so the
+speed numbers are honest steady-state figures, not best-case. Runs are reproducible from the scripts
+below — no hidden tuning to a specific test.
+
+**Fairness rules we hold ourselves to** (full detail in [`docs/methodology.md`](docs/methodology.md)):
+same corpora and labels for every guard we compare; a rival that isn't installed scores as *benign*
+(hurting its recall, never inflating ours); out-of-scope sets are labeled, not hidden; and any number
+we cite that we didn't measure locally is marked with its source.
+
+The four corpora:
 
 | Corpus | Prompts (mal / ben) | What it measures |
 |---|---|---|
@@ -193,6 +220,9 @@ We evaluate against **four recognized public corpora** from Hugging Face:
 | [`jackhhao/jailbreak-classification`](https://huggingface.co/datasets/jackhhao/jailbreak-classification) | 262 (139 / 123) | Jailbreak vs. benign |
 | [`xTRam1/safe-guard-prompt-injection`](https://huggingface.co/datasets/xTRam1/safe-guard-prompt-injection) | 2060 (650 / 1410) | Prompt injection (large) |
 | [`JailbreakBench/JBB-Behaviors`](https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors) | 100 (100 / 0) | Harmful-content goals (out of scope †) |
+
+**Reproduce the whole scorecard yourself** (the fetch scripts need only Python's standard library —
+no `pip install`):
 
 ```bash
 ./scripts/fetch-datasets.sh                        # -> datasets/*.jsonl (all four)
