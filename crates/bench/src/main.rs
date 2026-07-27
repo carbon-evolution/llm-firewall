@@ -25,11 +25,15 @@ struct Cli {
     /// Write results.json here.
     #[arg(long, default_value = "results.json")]
     out: String,
+    /// Diagnostic (ml feature only): dump per-example {label, cheap_score, cheap_block,
+    /// ml_p} to this JSONL path in a single ML pass, for offline threshold sweeps.
+    #[arg(long)]
+    dump_features: Option<String>,
 }
 
 fn core_guard(threshold: u8) -> CoreGuard {
     let policy = PolicySet::from_yaml(
-        "policies:\n  - name: b\n    when: { detector: injection, min_severity: high }\n    action: block\ndefault: allow\n",
+        "policies:\n  - name: block-injection-high\n    when: { detector: injection, min_severity: high }\n    action: block\n  - name: block-ml-positive\n    when: { detector: injection.ml }\n    action: block\ndefault: allow\n",
     )
     .expect("builtin policy");
     // With the `ml` feature, attach the DeBERTa Stage-C classifier when its asset is
@@ -61,6 +65,44 @@ fn core_guard(threshold: u8) -> CoreGuard {
     }
 }
 
+/// Dump per-example features in one ML pass: the cheap-stage (regex+heuristics) score
+/// and block flag, plus the raw DeBERTa P(injection). Lets us sweep both the score
+/// threshold and the ML cutoff offline without re-running the model each time.
+#[cfg(feature = "ml")]
+fn dump_features(data: &[dataset::Example], path: &str) -> anyhow::Result<()> {
+    use llm_firewall_core::{Action, Direction, MlClassifier};
+    use std::io::Write;
+
+    let policy = PolicySet::from_yaml(
+        "policies:\n  - name: b\n    when: { detector: injection, min_severity: high }\n    action: block\ndefault: allow\n",
+    )?;
+    // Cheap firewall = regex + heuristics only (no ML), so cheap_score isolates the
+    // rule stages; ml_p is the model's raw probability.
+    let cheap = Firewall::new(
+        vec![
+            Box::new(InjectionDetector::new()),
+            Box::new(SecretDetector::new()),
+            Box::new(PiiDetector::new()),
+        ],
+        policy,
+    );
+    let clf = MlClassifier::load("models/injection")?;
+
+    let mut f = std::fs::File::create(path)?;
+    for ex in data {
+        let out = cheap.run(&ex.text, Direction::Input);
+        let ml_p = clf.predict(&ex.text).unwrap_or(0.0);
+        let rec = serde_json::json!({
+            "label": ex.label,
+            "cheap_score": out.score.score,
+            "cheap_block": out.decision.action == Action::Block,
+            "ml_p": ml_p,
+        });
+        writeln!(f, "{rec}")?;
+    }
+    Ok(())
+}
+
 fn parse_rival(spec: &str) -> Option<SubprocessGuard> {
     let (name, cmd) = spec.split_once('=')?;
     let mut parts = cmd.split_whitespace();
@@ -82,6 +124,21 @@ fn main() -> anyhow::Result<()> {
         data.extend(dataset::load_jsonl(p)?);
     }
     eprintln!("loaded {} examples", data.len());
+
+    // Diagnostic feature dump (single ML pass) for offline threshold sweeps.
+    if let Some(path) = &cli.dump_features {
+        #[cfg(feature = "ml")]
+        {
+            dump_features(&data, path)?;
+            eprintln!("wrote features to {path}");
+            return Ok(());
+        }
+        #[cfg(not(feature = "ml"))]
+        {
+            let _ = path;
+            anyhow::bail!("--dump-features requires the `ml` feature");
+        }
+    }
 
     let mut results: Vec<EvalResult> = Vec::new();
     let core = core_guard(cli.threshold);

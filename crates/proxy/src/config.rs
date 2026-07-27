@@ -88,7 +88,14 @@ mod tests {
         assert_eq!(c.bind, "0.0.0.0:8080");
         assert_eq!(c.fail_mode, FailMode::FailClosed);
         assert_eq!(c.stream_window, 64);
-        assert_eq!(c.upstream.anthropic_base, "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn upstream_defaults() {
+        // Checked via Default (not env-influenced) to avoid racing the env-override tests.
+        let u = Upstream::default();
+        assert_eq!(u.openai_base, "https://api.openai.com");
+        assert_eq!(u.anthropic_base, "https://api.anthropic.com");
     }
 
     #[test]

@@ -3,6 +3,12 @@ policies:
     when: { detector: injection, min_severity: high }
     action: block
     message: "Blocked: possible prompt injection"
+  - name: block-ml-injection
+    # ML classifier positively identified injection (see injection detector's
+    # ml_threshold, default 0.5). Blocks directly, independent of risk-score banding.
+    when: { detector: injection.ml }
+    action: block
+    message: "Blocked: ML-detected prompt injection"
   - name: mask-pii
     when: { detector: pii }
     action: mask

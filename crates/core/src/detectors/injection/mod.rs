@@ -11,10 +11,25 @@ pub use ml::MlClassifier;
 
 use crate::{Context, Detector, Finding, Severity};
 
-#[derive(Default)]
+#[cfg_attr(not(feature = "ml"), derive(Default))]
 pub struct InjectionDetector {
     #[cfg(feature = "ml")]
     classifier: Option<ml::MlClassifier>,
+    /// P(injection) at/above which the ML stage flags. Defaults to the model's own
+    /// decision boundary (0.5); the DeBERTa classifier is well-calibrated (benign text
+    /// scores ≈0), so this can be lowered for more recall at little false-positive cost.
+    #[cfg(feature = "ml")]
+    ml_threshold: f32,
+}
+
+#[cfg(feature = "ml")]
+impl Default for InjectionDetector {
+    fn default() -> Self {
+        Self {
+            classifier: None,
+            ml_threshold: 0.5,
+        }
+    }
 }
 
 impl InjectionDetector {
@@ -26,6 +41,13 @@ impl InjectionDetector {
     #[cfg(feature = "ml")]
     pub fn with_ml(mut self, classifier: ml::MlClassifier) -> Self {
         self.classifier = Some(classifier);
+        self
+    }
+
+    /// Override the ML decision threshold (default 0.5). Clamped to `[0.0, 1.0]`.
+    #[cfg(feature = "ml")]
+    pub fn with_ml_threshold(mut self, threshold: f32) -> Self {
+        self.ml_threshold = threshold.clamp(0.0, 1.0);
         self
     }
 }
@@ -45,14 +67,16 @@ impl Detector for InjectionDetector {
         if let Some(clf) = &self.classifier {
             if should_escalate(&findings) {
                 if let Ok(p) = clf.predict(ctx.text) {
-                    if p >= 0.5 {
+                    if p >= self.ml_threshold {
                         let severity = if p >= 0.85 {
                             Severity::High
                         } else {
                             Severity::Medium
                         };
+                        // Own detector id (`injection.ml`) so a policy can act on an
+                        // ML-positive directly, independent of the risk-score banding.
                         findings.push(Finding::new(
-                            "injection",
+                            "injection.ml",
                             severity,
                             p,
                             format!("ML classifier P(injection)={p:.2}"),
@@ -70,7 +94,9 @@ impl Detector for InjectionDetector {
 }
 
 /// Decide whether the cheap stages were inconclusive enough to warrant the ML stage.
-/// Escalate when nothing was found, or the strongest finding is below `Medium`.
+/// Escalate unless a cheap stage already produced a blocking-level (`High`) finding.
+/// A weaker finding (including a low-confidence `Medium` heuristic that may not cross
+/// the risk threshold on its own) must NOT suppress the ML check.
 /// Only called from the `ml`-gated Stage C block above.
 #[cfg_attr(not(feature = "ml"), allow(dead_code))]
 fn should_escalate(findings: &[Finding]) -> bool {
@@ -78,7 +104,7 @@ fn should_escalate(findings: &[Finding]) -> bool {
         .iter()
         .map(|f| f.severity)
         .max()
-        .is_none_or(|max| max < Severity::Medium)
+        .is_none_or(|max| max < Severity::High)
 }
 
 #[cfg(test)]
@@ -97,6 +123,13 @@ mod tests {
     }
 
     #[test]
+    fn escalates_on_medium() {
+        // A Medium finding (possibly low-confidence, sub-threshold) must still escalate.
+        let f = vec![Finding::new("injection", Severity::Medium, 0.5, "weakish")];
+        assert!(super::should_escalate(&f));
+    }
+
+    #[test]
     fn does_not_escalate_on_high() {
         let f = vec![Finding::new("injection", Severity::High, 0.9, "strong")];
         assert!(!super::should_escalate(&f));
@@ -105,6 +138,17 @@ mod tests {
     #[test]
     fn detector_reports_name() {
         assert_eq!(InjectionDetector::new().name(), "injection");
+    }
+
+    #[cfg(feature = "ml")]
+    #[test]
+    fn ml_threshold_is_clamped() {
+        // Out-of-range thresholds are clamped into [0, 1]; default is the 0.5 boundary.
+        let d = InjectionDetector::new().with_ml_threshold(1.5);
+        assert!((d.ml_threshold - 1.0).abs() < f32::EPSILON);
+        let d = InjectionDetector::new().with_ml_threshold(-0.2);
+        assert!(d.ml_threshold.abs() < f32::EPSILON);
+        assert!((InjectionDetector::new().ml_threshold - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]

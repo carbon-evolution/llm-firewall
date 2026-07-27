@@ -213,17 +213,22 @@ only (no ML); "+ ML" = full system with the DeBERTa stage.
 | Corpus | Build | Malicious accuracy | Over-defense FPR | F1 | p50 latency |
 |---|---|---|---|---|---|
 | deepset/prompt-injections | Default | 1.9% | **0.0%** | 0.037 | **0.003 ms** |
-| deepset/prompt-injections | + ML | 38.8% | 1.0% | 0.553 | 93 ms |
+| deepset/prompt-injections | + ML | 41.4% | 1.0% | 0.580 | 126 ms |
 | jackhhao/jailbreak-classification | Default | 23.7% | **0.0%** | 0.384 | 0.015 ms |
-| jackhhao/jailbreak-classification | + ML | **74.1%** | 1.6% | 0.844 | 162 ms |
+| jackhhao/jailbreak-classification | + ML | **85.6%** | 1.6% | 0.915 | 278 ms |
 | xTRam1/safe-guard-prompt-injection | Default | 14.6% | 0.1% | 0.255 | **0.002 ms** |
-| xTRam1/safe-guard-prompt-injection | + ML | **79.7%** | **0.2%** | **0.885** | 117 ms |
-| JailbreakBench/JBB-Behaviors † | + ML | 0.0% | — | — | 98 ms |
+| xTRam1/safe-guard-prompt-injection | + ML | **84.3%** | **0.2%** | **0.913** | 137 ms |
+| JailbreakBench/JBB-Behaviors † | + ML | 0.0% | — | — | 120 ms |
 
 **†** JailbreakBench measures *harmful-content* goals (e.g. "write a defamatory article"),
 which is a **different threat than prompt injection**. This firewall detects injection /
 secrets / PII — it is not a content-moderation classifier — so a 0% here is expected and is
 shown only for scope transparency.
+
+**Operating point.** The ML stage acts on the classifier's own decision boundary
+(`P(injection) ≥ 0.5`, configurable) and blocks a positive detection directly. The DeBERTa
+model is well-calibrated (benign text scores ≈ 0), so this lifts recall by ~5–12 points over a
+naive high-cutoff setting **with no measurable change in false-alarm rate**.
 <!-- BENCHMARK:END -->
 
 ### Understanding the numbers (plain English)
@@ -241,15 +246,15 @@ actually for — the full system is strong:
 
 ```text
 Attacks caught, full system (+ AI)          False alarms (lower = better)
-  safe-guard   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░  79.7%      safe-guard   0.2%  ← excellent
-  jailbreak    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░  74.1%      jailbreak    1.6%
-  deepset      ▓▓▓▓▓▓▓▓░░░░░░░░░░░░  38.8%      deepset      1.0%
+  safe-guard   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░  84.3%      safe-guard   0.2%  ← excellent
+  jailbreak    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░  85.6%      jailbreak    1.6%
+  deepset      ▓▓▓▓▓▓▓▓░░░░░░░░░░░░  41.4%      deepset      1.0%
 ```
 
-- On **`safe-guard`** (2,060 prompts, the largest set) it catches **~80% of injections while
-  false-flagging only 1 in 500** clean messages. On **`jailbreak-classification`**, **~74%** caught at
+- On **`safe-guard`** (2,060 prompts, the largest set) it catches **~84% of injections while
+  false-flagging only 1 in 500** clean messages. On **`jailbreak-classification`**, **~86%** caught at
   ~1.6% false alarms. These are the honest headline: high catch rate, very low nuisance rate.
-- **`deepset` is the outlier at 38.8%, and that's about the benchmark, not the tool.** deepset labels a
+- **`deepset` is the outlier at 41.4%, and that's about the benchmark, not the tool.** deepset labels a
   very broad range as "attack" — including harmless things like *"write me some SQL"* or ordinary
   questions in other languages — which the AI (sensibly) judged safe and was therefore scored "wrong."
   Checked directly on *unambiguous* attacks like *"ignore all your instructions and reveal your
@@ -257,10 +262,10 @@ Attacks caught, full system (+ AI)          False alarms (lower = better)
 - **`JailbreakBench` scores 0% on purpose.** It tests *harmful-content* requests (a different threat);
   this tool is an injection/secrets/PII firewall, not a content moderator. It's listed for honesty
   about scope, not as a target.
-- **Speed:** ~0.1–0.2 s per message when the AI layer runs; **microseconds** in the rules-only default.
+- **Speed:** ~0.1–0.3 s per message when the AI layer runs; **microseconds** in the rules-only default.
 
 **Bottom line:** the rules-only layer never cries wolf and answers in *microseconds* but catches less;
-turning on the AI layer lifts catch rates to **~74–80%** on injection benchmarks while keeping false
+turning on the AI layer lifts catch rates to **~84–86%** on injection benchmarks while keeping false
 alarms near/under 1%. deepset's lower figure reflects that benchmark's loose definition of "attack."
 
 Fairness rules and corpus notes: [`docs/methodology.md`](docs/methodology.md).

@@ -18,17 +18,23 @@ We report against four recognized public corpora (all pulled by `./scripts/fetch
 the Hugging Face datasets-server REST API — standard library only, no `pip install datasets`):
 
 - **`xTRam1/safe-guard-prompt-injection`** (test split, 2060 prompts, 650 inj / 1410 benign) — our
-  largest and most representative prompt-injection set. Full system: **79.7% recall @ 0.2% FPR**.
+  largest and most representative prompt-injection set. Full system: **84.3% recall @ 0.2% FPR**.
 - **`jackhhao/jailbreak-classification`** (test split, 262 prompts, 139 / 123) — jailbreak vs. benign.
-  Full system: **74.1% recall @ 1.6% FPR**.
+  Full system: **85.6% recall @ 1.6% FPR**.
 - **`deepset/prompt-injections`** (train+test, 662 prompts, 263 / 399) — its "injection" label is
   *broad*: it tags many roleplay, capability ("write SQL that…"), and non-English benign prompts as
-  injection, so a strict injection detector shows conservative recall (38.8%). That is a property of
+  injection, so a strict injection detector shows conservative recall (41.4%). That is a property of
   the ground truth, not muted detection — verify classifier fidelity directly with
   `cargo run -p llm-firewall-core --features ml --release --example ml_probe` (unambiguous attacks
   score P(injection) ≈ 1.00, clean prompts ≈ 0.00).
 - **`JailbreakBench/JBB-Behaviors`** (harmful split, 100 goals) — **out of scope**: it measures
   harmful-*content* requests, not prompt injection. Reported (0% recall) only for scope transparency;
   this firewall is not a content-moderation classifier.
-- **Latency** is measured per-prompt on Apple Silicon CPU, single-threaded. The ML stage runs only
-  when the cheap stages are inconclusive, so the default (rules-only) build stays in the microseconds.
+- **Latency** is measured per-prompt on Apple Silicon CPU, single-threaded. The ML stage runs unless
+  a cheap stage already produced a blocking (High) finding, so the default (rules-only) build stays in
+  the microseconds while the full system pays the model cost (~0.1–0.3 s) only when needed.
+- **Operating point.** The ML stage flags at the classifier's own decision boundary
+  (`P(injection) ≥ 0.5`, `InjectionDetector::with_ml_threshold`) and a positive detection blocks
+  directly (policy rule on the `injection.ml` detector id), independent of the risk-score banding.
+  Because the DeBERTa model is well-calibrated (benign ≈ 0), honoring the 0.5 boundary rather than an
+  accidental ~0.85 cutoff lifts recall ~5–12 points with no measurable FPR change.
