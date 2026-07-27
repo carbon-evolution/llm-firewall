@@ -4,7 +4,7 @@
 
 **Goal:** Add a normalization pre-pass that defeats obfuscated/evasive attacks (zero-width splitting, homoglyph/Unicode confusables, base64/hex-encoded payloads) so the existing detectors catch them — without breaking PII byte-span masking.
 
-**Architecture:** A new `normalize` module in `llm-firewall-core` produces a normalized copy of the text. `Firewall::run` uses a **dual-scan** strategy: it always scans the *original* text (so masking spans stay valid), and — only when normalization actually changed the text — additionally scans the *normalized* text for **block/flag/score signals** (with spans dropped). Findings are merged and de-duplicated. Masking only ever consumes original-text spans. The pre-pass is config-gated; zero-width + homoglyph tiers default **on**, base64 tier defaults **off** (opt-in). Effectiveness is proven with an **obfuscation-resilience benchmark**: recognized public attack sets are transformed with the same techniques trusted red-team tools use (Unicode UTS #39 confusables, NVIDIA garak `encoding` probes, Microsoft PyRIT converters), and recall is reported with vs. without the pre-pass.
+**Architecture:** A new `normalize` module in `llm-firewall-core` produces a normalized copy of the text. `Firewall::run` uses a **dual-scan** strategy: it always scans the *original* text (so masking spans stay valid), and — only when normalization actually changed the text — additionally scans the *normalized* text for **block/flag/score signals** (with spans dropped). Findings are merged and de-duplicated. Masking only ever consumes original-text spans. The pre-pass is config-gated; zero-width + homoglyph tiers default **on**, base64 tier defaults **off** (opt-in). Effectiveness is proven with an **obfuscation-resilience benchmark**: recognized public attack sets are transformed with the same techniques trusted red-team tools use (Unicode UTS #39 confusables, NVIDIA garak `encoding` probes, Microsoft PyRIT converters), and recall is reported with vs. without the pre-pass. As a final external check, **NVIDIA garak's `encoding` probe suite is run directly against the running proxy** (raw upstream vs. firewall-protected) to publish a resilience delta from a scanner engineers already trust.
 
 **Tech Stack:** Rust; `unicode-normalization` (NFKC), `base64` (decode); a curated confusables table seeded from Unicode UTS #39 `confusables.txt`. No changes to the `Detector` trait.
 
@@ -44,6 +44,7 @@ legitimate content, so base64 defaults off).
 - **Modify:** `crates/bench/src/main.rs` — attach the normalizer in `core_guard` (default on for zero-width+homoglyph).
 - **Create:** `scripts/obfuscate-dataset.py` — generate obfuscated variants of a `datasets/*.jsonl`.
 - **Modify:** `README.md` + `docs/methodology.md` — obfuscation-resilience scorecard row + trusted-source citations.
+- **Create:** `docs/garak-validation.md` (+ saved garak reports) — external NVIDIA garak `encoding`-probe validation (Task 6).
 
 Design boundaries: masking correctness lives entirely in `firewall.rs` (only original-span findings reach `mask`); the `normalize` module is pure (`&str -> Normalized`), no I/O, unit-testable in isolation.
 
@@ -636,20 +637,86 @@ git commit -m "bench: obfuscation-resilience scorecard (UTS#39/garak/PyRIT trans
 
 ---
 
-### Stretch (optional, separate follow-up): run NVIDIA garak against the proxy
+### Task 6: External validation — NVIDIA garak `encoding` probes against the proxy
 
-For the strongest "trusted-platform" claim, run **garak** (`pip install garak`) with its `encoding`
-probe suite against a running `llm-firewall` proxy pointed at any cheap upstream, and report the
-pass rate on `probes.encoding.*`. This is the industry-recognized scanner engineers know; a green
-result is a headline. Deferred because it needs a live upstream + network, unlike the offline,
-deterministic Task 5 benchmark.
+**Files:**
+- Modify: `README.md` (a "Validated with NVIDIA garak" subsection)
+- Create: `docs/garak-validation.md` (exact versions, commands, captured reports)
+
+The strongest, most-recognized "trusted-platform" claim: run **garak** — the widely-used open-source
+LLM vulnerability scanner — with its `encoding` probe suite (base64/rot13/etc. injection) against the
+running firewall, and report the resilience score. Because a raw model's own robustness varies, we
+report the **delta**: garak against the *raw upstream* vs. against the *firewall (base64 tier on)* —
+which isolates the firewall's contribution.
+
+**Prerequisites (manual, needs network + a live model + small API cost):** `pip install garak`, and a
+reachable upstream — either a real key (`gpt-4o-mini` is cheap) or a local Ollama model via its
+OpenAI-compatible endpoint (zero cost).
+
+- [ ] **Step 1: Install garak, pin the version**
+
+```bash
+python3 -m pip install garak
+garak --version    # record this in docs/garak-validation.md
+```
+
+- [ ] **Step 2: Baseline — garak against the RAW upstream (no firewall)**
+
+```bash
+export OPENAI_BASE_URL=https://api.openai.com/v1     # or your Ollama :11434/v1
+export OPENAI_API_KEY=sk-...                         # real key
+garak --model_type openai --model_name gpt-4o-mini \
+      --probes encoding --generations 1 --report_prefix raw_baseline
+```
+Capture the `encoding.*` resilience/pass rate — this shows which encoded-injection probes get through
+an unprotected model.
+
+- [ ] **Step 3: Protected — garak against the FIREWALL (base64 tier ON)**
+
+Start the firewall with the base64 tier enabled (in `firewall.yaml`: `normalize: { decode_encoded: true }`),
+pointed at the same upstream:
+
+```bash
+LLM_FW_OPENAI_BASE=https://api.openai.com cargo run --release -p llm-firewall   # listens :8080
+```
+Then, in another shell, point garak at the firewall:
+
+```bash
+export OPENAI_BASE_URL=http://localhost:8080/v1
+export OPENAI_API_KEY=sk-...                         # forwarded upstream by the firewall
+garak --model_type openai --model_name gpt-4o-mini \
+      --probes encoding --generations 1 --report_prefix fw_protected
+```
+
+**Interpretation:** when the firewall blocks an encoded injection it returns HTTP 400; the OpenAI
+client raises, garak records a non-successful generation → counts toward *resilience* (not a hit). So
+the firewall's normalization should push the `encoding.*` pass rate **up** vs. the baseline.
+
+- [ ] **Step 4: Record + publish**
+
+Save both garak reports (`*.report.jsonl` / hitlog) under `docs/`. In `docs/garak-validation.md`,
+tabulate the `encoding.*` pass rate: **raw upstream vs. firewall-protected**, with the garak version
+and exact commands. Add a short **"Validated with NVIDIA garak"** subsection to the README stating the
+delta (e.g. *"garak `encoding` probes: N% resilient raw → M% behind the firewall"*), linked to the doc.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add README.md docs/garak-validation.md docs/*garak*report*
+git commit -m "test: external validation with NVIDIA garak encoding probes (raw vs. firewall)"
+```
+
+**Honesty notes to keep in the doc:** results depend on the upstream model too (hence the delta, not
+an absolute); garak version is pinned; this complements — does not replace — the offline deterministic
+Task 5 benchmark.
 
 ---
 
 ## Self-Review
 
 **Spec coverage:** All three tiers (Task 1 zero-width/bidi, Task 2 NFKC+homoglyph, Task 3 base64) are
-implemented and integrated (Task 4) with an effectiveness benchmark (Task 5). ✔
+implemented and integrated (Task 4), with an offline effectiveness benchmark (Task 5) **and** external
+validation via NVIDIA garak `encoding` probes (Task 6). ✔
 
 **Masking safety:** `run` clones the original-pass findings into `mask_findings` *before* the evasion
 pass, and evasion findings have `span = None`; `mask` only ever sees original-text spans. ✔
