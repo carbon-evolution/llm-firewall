@@ -7,6 +7,8 @@ of the provider and every request is checked, scored, and logged — **no app ch
 
 ![CI](https://github.com/carbon-evolution/llm-firewall/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
+![Release](https://img.shields.io/github/v/release/carbon-evolution/llm-firewall?sort=semver)
+![GHCR](https://img.shields.io/badge/ghcr.io-container-2496ed?logo=docker&logoColor=white)
 ![Rust](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)
 ![Tests](https://img.shields.io/badge/tests-83%20passing-brightgreen)
 ![Made with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e?logo=rust&logoColor=white)
@@ -160,7 +162,15 @@ do **not** install these by hand — `cargo` resolves them from `Cargo.toml`.
 
 ### 1. Start the firewall
 
-**With Docker** (nothing to install but Docker):
+**With Docker** — pull the pre-built image from GitHub Packages (GHCR):
+
+```bash
+docker pull ghcr.io/carbon-evolution/llm-firewall:latest
+docker run -p 8080:8080 -e LLM_FW_OPENAI_BASE=https://api.openai.com \
+  ghcr.io/carbon-evolution/llm-firewall:latest
+```
+
+…or build it yourself:
 
 ```bash
 docker build -f deploy/Dockerfile -t llm-firewall .
