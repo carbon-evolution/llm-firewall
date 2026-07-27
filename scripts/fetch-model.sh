@@ -1,24 +1,34 @@
 #!/usr/bin/env bash
-# Fetch the prompt-injection classifier into models/injection/.
+# Fetch the ML model assets with plain curl (resumable, no huggingface CLI, no auth
+# needed for these open models). If the primary host is slow/throttled, set
+# HF_HOST=https://hf-mirror.com for a mirror.
 #
-# Downloads config.json + tokenizer.json + model.safetensors with plain curl
-# (resumable, no huggingface CLI, no auth needed for this open model). If the
-# primary host is slow/throttled, set HF_HOST=https://hf-mirror.com for a mirror.
+#   ./scripts/fetch-model.sh            # both: injection + moderation
+#   ./scripts/fetch-model.sh injection  # just the prompt-injection classifier
+#   ./scripts/fetch-model.sh moderation # just the harmful-content classifier
 set -euo pipefail
 
-MODEL_REPO="${MODEL_REPO:-protectai/deberta-v3-base-prompt-injection-v2}"
-DEST="${DEST:-models/injection}"
 HF_HOST="${HF_HOST:-https://huggingface.co}"
+WHICH="${1:-all}"
 
-mkdir -p "$DEST"
-echo "Fetching $MODEL_REPO from $HF_HOST -> $DEST"
+fetch() {
+  local repo="$1" dest="$2"
+  mkdir -p "$dest"
+  echo "Fetching $repo from $HF_HOST -> $dest"
+  for f in config.json tokenizer.json model.safetensors; do
+    echo "  - $f"
+    curl -L -C - --retry 8 --retry-delay 3 --fail -o "$dest/$f" \
+      "$HF_HOST/$repo/resolve/main/$f"
+  done
+}
 
-for f in config.json tokenizer.json model.safetensors; do
-  echo "  - $f"
-  curl -L -C - --retry 8 --retry-delay 3 --fail \
-    -o "$DEST/$f" \
-    "$HF_HOST/$MODEL_REPO/resolve/main/$f"
-done
+if [ "$WHICH" = "all" ] || [ "$WHICH" = "injection" ]; then
+  fetch "${INJECTION_REPO:-protectai/deberta-v3-base-prompt-injection-v2}" models/injection
+fi
+if [ "$WHICH" = "all" ] || [ "$WHICH" = "moderation" ]; then
+  # Harmful-request classifier (BeaverTails). Serves OWASP-adjacent harmful-content /
+  # jailbreak-goal detection. Labels: index 0 = harmful, 1 = safe.
+  fetch "${MODERATION_REPO:-domenicrosati/deberta-v3-xsmall-beavertails-harmful-qa-classifier}" models/moderation
+fi
 
-echo "Done. Files:"
-ls -la "$DEST"
+echo "Done."

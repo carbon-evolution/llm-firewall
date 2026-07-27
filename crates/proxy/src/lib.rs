@@ -9,7 +9,8 @@ pub mod pipeline;
 
 use axum::{routing::post, Router};
 use llm_firewall_core::{
-    Firewall, InjectionDetector, OutputDetector, PiiDetector, PolicySet, SecretDetector,
+    Firewall, InjectionDetector, ModerationDetector, OutputDetector, PiiDetector, PolicySet,
+    SecretDetector,
 };
 
 pub use config::{Config, FailMode};
@@ -27,6 +28,8 @@ pub fn build_firewall(cfg: &Config) -> anyhow::Result<Firewall> {
             Box::new(SecretDetector::new()),
             Box::new(PiiDetector::new()),
             Box::new(OutputDetector::new()),
+            // Inert without the `ml` feature + a fetched model (same as injection ML).
+            Box::new(ModerationDetector::new()),
         ],
         policy,
     ))
