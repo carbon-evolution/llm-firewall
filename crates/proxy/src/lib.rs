@@ -1,5 +1,6 @@
 //! LLM Firewall proxy — library surface (also used by integration tests).
 
+pub mod anthropic;
 pub mod audit;
 pub mod config;
 pub mod handlers;
@@ -10,7 +11,7 @@ use axum::{routing::post, Router};
 use llm_firewall_core::{Firewall, InjectionDetector, PiiDetector, PolicySet, SecretDetector};
 
 pub use config::{Config, FailMode};
-pub use handlers::{chat_completions, AppState, Shared};
+pub use handlers::{chat_completions, messages, AppState, Shared};
 
 /// Build the `Firewall` (detectors + policy) from config.
 pub fn build_firewall(cfg: &Config) -> anyhow::Result<Firewall> {
@@ -32,6 +33,7 @@ pub fn build_firewall(cfg: &Config) -> anyhow::Result<Firewall> {
 pub fn app(state: Shared) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/messages", post(messages))
         .with_state(state)
 }
 
@@ -39,7 +41,10 @@ pub fn app(state: Shared) -> Router {
 pub fn test_config(base: String) -> Config {
     Config {
         bind: "127.0.0.1:0".into(),
-        upstream: config::Upstream { openai_base: base },
+        upstream: config::Upstream {
+            openai_base: base.clone(),
+            anthropic_base: base,
+        },
         policy_file: None,
         fail_mode: FailMode::FailClosed,
         stream_window: 64,

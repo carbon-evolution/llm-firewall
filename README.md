@@ -1,9 +1,9 @@
 # LLM Firewall
 
-A pure-Rust **firewall for LLMs** — a drop-in, OpenAI-compatible reverse proxy that inspects, scores,
-and filters the prompts and responses flowing between your app and an LLM (GPT/Claude). Point your
-app at it instead of `api.openai.com` and every request is checked, scored, and logged — **no app
-changes required**.
+A pure-Rust **firewall for LLMs** — a drop-in reverse proxy that inspects, scores, and filters the
+prompts and responses flowing between your app and an LLM. It speaks both the **OpenAI**
+(`/v1/chat/completions`) and native **Anthropic** (`/v1/messages`) APIs. Point your app at it instead
+of the provider and every request is checked, scored, and logged — **no app changes required**.
 
 ![CI](https://github.com/carbon-evolution/llm-firewall/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
@@ -26,6 +26,19 @@ changes required**.
 - **Response scanning + streaming** — inspects model output too, including SSE token streams
   (verbatim byte passthrough with a sliding-window scan).
 - **Structured audit log** — one JSON line per request (decision, score, reasons, latency).
+
+## Supported providers
+
+The detection engine is **model-agnostic** — it inspects text, so it works with any model. Two API
+formats are supported on the wire:
+
+| Format | Endpoint | Works with |
+|---|---|---|
+| **OpenAI** | `/v1/chat/completions` | OpenAI (GPT); **Claude & Gemini via their OpenAI-compatible endpoints**; Groq, Mistral, Together, Fireworks, OpenRouter, DeepSeek, xAI; local runtimes (Ollama, vLLM, LM Studio, llama.cpp) |
+| **Anthropic (native)** | `/v1/messages` | Claude via Anthropic's **native** Messages API (`system` + content blocks, `x-api-key`) |
+
+Route each format to the right upstream via config (`openai_base`, `anthropic_base`). Gemini's *native*
+`generateContent` API is not yet implemented — use its OpenAI-compatible endpoint for now.
 
 ## How it works
 
@@ -117,7 +130,7 @@ Change **one line** in your app — the base URL — and keep everything else th
 `Authorization: Bearer <key>` header is forwarded to the real LLM unchanged.
 
 ```python
-# Python OpenAI SDK example — only base_url changes
+# OpenAI SDK (also covers Claude/Gemini via their OpenAI-compatible endpoints)
 from openai import OpenAI
 client = OpenAI(
     base_url="http://localhost:8080/v1",   # ← was https://api.openai.com/v1
@@ -125,6 +138,20 @@ client = OpenAI(
 )
 resp = client.chat.completions.create(
     model="gpt-4o-mini",
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+```
+
+```python
+# Anthropic SDK — native Messages API through the firewall
+from anthropic import Anthropic
+client = Anthropic(
+    base_url="http://localhost:8080",       # ← was https://api.anthropic.com
+    api_key="sk-ant-...your real key...",   # forwarded upstream as x-api-key
+)
+resp = client.messages.create(
+    model="claude-3-5-sonnet-latest",
+    max_tokens=1024,
     messages=[{"role": "user", "content": "Hello!"}],
 )
 ```
@@ -142,9 +169,15 @@ Tune the behavior in `policies/default.yaml` (allow / mask / block / flag rules)
 
 ## Configuration
 
-`firewall.yaml` sets the bind address, upstream base URL, policy file, fail mode (`fail_closed`
-default), and stream window. Env overrides: `LLM_FW_BIND`, `LLM_FW_OPENAI_BASE`. Policies live in
-`policies/*.yaml` — see `policies/default.yaml`.
+`firewall.yaml` sets the bind address, upstream base URLs, policy file, fail mode (`fail_closed`
+default), and stream window. Env overrides: `LLM_FW_BIND`, `LLM_FW_OPENAI_BASE`,
+`LLM_FW_ANTHROPIC_BASE`. Policies live in `policies/*.yaml` — see `policies/default.yaml`.
+
+```yaml
+upstream:
+  openai_base: https://api.openai.com      # /v1/chat/completions target
+  anthropic_base: https://api.anthropic.com # /v1/messages target
+```
 
 ---
 

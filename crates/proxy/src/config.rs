@@ -13,6 +13,9 @@ pub enum FailMode {
 pub struct Upstream {
     #[serde(default = "default_openai")]
     pub openai_base: String,
+    /// Base URL for the native Anthropic Messages API (`/v1/messages`).
+    #[serde(default = "default_anthropic")]
+    pub anthropic_base: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +38,9 @@ fn default_bind() -> String {
 fn default_openai() -> String {
     "https://api.openai.com".into()
 }
+fn default_anthropic() -> String {
+    "https://api.anthropic.com".into()
+}
 fn default_fail() -> FailMode {
     FailMode::FailClosed
 }
@@ -46,6 +52,7 @@ impl Default for Upstream {
     fn default() -> Self {
         Self {
             openai_base: default_openai(),
+            anthropic_base: default_anthropic(),
         }
     }
 }
@@ -65,6 +72,9 @@ impl Config {
         if let Ok(v) = std::env::var("LLM_FW_OPENAI_BASE") {
             self.upstream.openai_base = v;
         }
+        if let Ok(v) = std::env::var("LLM_FW_ANTHROPIC_BASE") {
+            self.upstream.anthropic_base = v;
+        }
     }
 }
 
@@ -78,6 +88,15 @@ mod tests {
         assert_eq!(c.bind, "0.0.0.0:8080");
         assert_eq!(c.fail_mode, FailMode::FailClosed);
         assert_eq!(c.stream_window, 64);
+        assert_eq!(c.upstream.anthropic_base, "https://api.anthropic.com");
+    }
+
+    #[test]
+    fn anthropic_env_override_wins() {
+        std::env::set_var("LLM_FW_ANTHROPIC_BASE", "http://localhost:8888");
+        let c = Config::from_yaml("upstream: {}").unwrap();
+        assert_eq!(c.upstream.anthropic_base, "http://localhost:8888");
+        std::env::remove_var("LLM_FW_ANTHROPIC_BASE");
     }
 
     #[test]
