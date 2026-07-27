@@ -331,8 +331,15 @@ findings by category and detector — see the tags in the audit log too.
 
 Attackers hide injections with zero-width characters, Unicode homoglyphs (`іgnore` with a Cyrillic
 `і`), or base64 wrapping. A **normalization pre-pass** de-obfuscates a *copy* of the text before
-detection (dual-scan: the original is still what gets forwarded/masked, and obfuscation alone is never
-a block reason — only a decoded *attack* is). Measured on `safe-guard` with the malicious rows
+detection. Normalization is **not** a detector — it runs the *same* injection / secret / PII checks a
+second time on the cleaned-up copy (a **dual-scan**), so the original text is still what gets
+forwarded/masked, and **obfuscation alone is never a block reason — only a decoded attack is**:
+
+<p align="center">
+  <img src="docs/img/dual-scan-flow.png" alt="Dual-scan flow: Prompt → 1 Scan the ORIGINAL text (injection/secrets/PII, findings keep byte-spans for masking) → changed? → 2 Normalize a copy (strip zero-width, fold homoglyphs, decode base64) → 2b Scan the NORMALIZED copy (same detectors, signal only, spans dropped) → 3 Risk score 0-100 → 4 Policy → block / mask (uses ORIGINAL spans) / allow. Obfuscation is never a block reason — only a decoded attack is." width="900">
+</p>
+
+Measured on `safe-guard` with the malicious rows
 transformed using the techniques trusted red-team tools apply (Unicode UTS #39 confusables,
 Trojan-Source zero-width, NVIDIA garak / Microsoft PyRIT base64):
 
@@ -361,6 +368,13 @@ python3 scripts/obfuscate-dataset.py datasets/safe_guard.jsonl datasets/sg_homo.
 cargo run --release -p llm-firewall-bench -- --dataset datasets/sg_homo.jsonl --no-normalize  # 0.0%
 cargo run --release -p llm-firewall-bench -- --dataset datasets/sg_homo.jsonl               # 14.5%
 ```
+
+**External check (NVIDIA garak).** We also ran garak's `encoding.InjectBase64` probe straight at a
+local model (Gemma-4B via LM Studio) vs. through the firewall. Raw, **~24–42% of base64-encoded
+injections succeeded**; behind the firewall none reached the user. *Honest caveat:* on this test the
+firewall stops them **output-side**, largely via the secret detector's high-entropy gate reacting to
+the base64 in replies — effective, but partly incidental (it would also over-block legitimate base64
+in a response). Full write-up + the over-defense follow-up: [`docs/garak-validation.md`](docs/garak-validation.md).
 
 ### Understanding the numbers (plain English)
 
