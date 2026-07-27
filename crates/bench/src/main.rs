@@ -48,9 +48,12 @@ struct Cli {
     /// measure the baseline vs. protected recall on obfuscated corpora.
     #[arg(long, default_value_t = false)]
     no_normalize: bool,
+    /// Also enable the base64-decode normalization tier (opt-in; off by default).
+    #[arg(long, default_value_t = false)]
+    normalize_base64: bool,
 }
 
-fn core_guard(threshold: u8, moderation: bool, normalize: bool) -> CoreGuard {
+fn core_guard(threshold: u8, moderation: bool, normalize: bool, base64: bool) -> CoreGuard {
     let policy = PolicySet::from_yaml(
         "policies:\n  - name: block-injection-high\n    when: { detector: injection, min_severity: high }\n    action: block\n  - name: block-ml-positive\n    when: { detector: injection.ml }\n    action: block\n  - name: block-moderation\n    when: { detector: moderation }\n    action: block\ndefault: allow\n",
     )
@@ -102,7 +105,10 @@ fn core_guard(threshold: u8, moderation: bool, normalize: bool) -> CoreGuard {
 
     let mut firewall = Firewall::new(detectors, policy);
     if normalize {
-        firewall = firewall.with_normalizer(Normalizer::default());
+        firewall = firewall.with_normalizer(Normalizer {
+            decode_encoded: base64,
+            ..Normalizer::default()
+        });
     }
     CoreGuard {
         firewall,
@@ -186,7 +192,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut results: Vec<EvalResult> = Vec::new();
-    let core = core_guard(cli.threshold, cli.moderation, !cli.no_normalize);
+    let core = core_guard(
+        cli.threshold,
+        cli.moderation,
+        !cli.no_normalize,
+        cli.normalize_base64,
+    );
 
     if let Some(path) = &cli.report {
         std::fs::write(path, report::build_report(&core.firewall, &data))?;
