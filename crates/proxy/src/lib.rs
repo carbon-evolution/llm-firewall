@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Arthur Lin (carbon-evolution)
+
 //! LLM Firewall proxy — library surface (also used by integration tests).
 
 pub mod anthropic;

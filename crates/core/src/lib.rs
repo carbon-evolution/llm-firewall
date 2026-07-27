@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Arthur Lin (carbon-evolution)
+
 //! `llm-firewall-core` — the pure-Rust detection engine.
 //! No I/O lives here; detectors return `Finding`s and the scorer aggregates them.
 
