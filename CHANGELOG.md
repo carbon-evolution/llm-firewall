@@ -3,6 +3,29 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-07-28
+
+Obfuscation / evasion resilience — a normalization pre-pass so attacks hidden by
+zero-width characters, Unicode homoglyphs, or base64 are still caught.
+
+### Added
+- **Dual-scan normalization** (`llm-firewall-core::normalize`): the firewall now scans a
+  de-obfuscated *copy* of the text with the same injection / secret / PII detectors, then
+  merges findings. The original text is still what gets forwarded and masked, and
+  **obfuscation alone is never a block reason — only a decoded attack is.**
+  - Tier 1: strip zero-width & bidi control characters (Trojan-Source class, CVE-2021-42574).
+  - Tier 2: NFKC fold + curated Unicode-confusable (UTS #39) Cyrillic/Greek → ASCII mapping.
+  - Tier 3 (opt-in): decode base64-looking segments and append the payload for scanning.
+- Proxy config `normalize` block (`enabled`, `strip_zero_width`, `fold_homoglyphs`,
+  `decode_encoded`; zero-width + homoglyph on by default, base64 opt-in).
+- Benchmark flags `--no-normalize` and `--normalize-base64`, plus
+  `scripts/obfuscate-dataset.py` to transform malicious rows for obfuscation-resilience runs.
+
+### Validation
+- Offline rule-layer benchmark: obfuscated-attack recall 0.0% → 14.5% (base64 0.0% → 30.6%)
+  with 0.00% FPR on a multilingual benign control.
+- External check with NVIDIA garak `encoding.InjectBase64` (see `docs/garak-validation.md`).
+
 ## [0.1.0] - 2026-07-27
 
 First public release — a pure-Rust firewall for LLMs (OpenAI-compatible + native Anthropic
