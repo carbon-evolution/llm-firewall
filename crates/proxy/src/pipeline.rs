@@ -1,10 +1,40 @@
 //! Turn a `Firewall` verdict over each message into a proxy-level decision.
 
-use llm_firewall_core::{Action, Direction, Firewall};
+use llm_firewall_core::{Action, Direction, Firewall, Outcome};
 use serde_json::Value;
 
 use crate::anthropic::AnthropicRequest;
 use crate::openai::ChatRequest;
+
+/// Accumulates the highest-scoring segment plus the distinct OWASP/ATLAS tags seen.
+#[derive(Default)]
+struct Acc {
+    worst: u8,
+    reasons: Vec<String>,
+    owasp: Vec<String>,
+    atlas: Vec<String>,
+}
+
+impl Acc {
+    fn note(&mut self, out: &Outcome) {
+        for f in &out.findings {
+            if let Some(o) = &f.owasp {
+                if !self.owasp.contains(o) {
+                    self.owasp.push(o.clone());
+                }
+            }
+            if let Some(a) = &f.atlas {
+                if !self.atlas.contains(a) {
+                    self.atlas.push(a.clone());
+                }
+            }
+        }
+        if out.score.score > self.worst {
+            self.worst = out.score.score;
+            self.reasons = out.score.reasons.clone();
+        }
+    }
+}
 
 pub struct InputDecision {
     /// None = forward `request`; Some(reason) = block with this reason.
@@ -13,21 +43,15 @@ pub struct InputDecision {
     pub request: ChatRequest,
     pub score: u8,
     pub reasons: Vec<String>,
+    pub owasp: Vec<String>,
+    pub atlas: Vec<String>,
 }
 
 /// Run the firewall over one text segment: mask it in place, or return a block reason.
-/// Tracks the highest-scoring segment in `worst`/`reasons`.
-fn scan_segment(
-    fw: &Firewall,
-    text: &mut String,
-    worst: &mut u8,
-    reasons: &mut Vec<String>,
-) -> Option<String> {
+/// Records tags + the highest-scoring segment into `acc`.
+fn scan_segment(fw: &Firewall, text: &mut String, acc: &mut Acc) -> Option<String> {
     let out = fw.run(text, Direction::Input);
-    if out.score.score > *worst {
-        *worst = out.score.score;
-        *reasons = out.score.reasons.clone();
-    }
+    acc.note(&out);
     match out.decision.action {
         Action::Block => Some(
             out.decision
@@ -46,16 +70,17 @@ fn scan_segment(
 
 /// Inspect every message; block on the first blocking verdict, else mask in place.
 pub fn decide_input(fw: &Firewall, mut request: ChatRequest) -> InputDecision {
-    let mut worst = 0u8;
-    let mut reasons = Vec::new();
+    let mut acc = Acc::default();
 
     for msg in request.messages.iter_mut() {
-        if let Some(reason) = scan_segment(fw, &mut msg.content, &mut worst, &mut reasons) {
+        if let Some(reason) = scan_segment(fw, &mut msg.content, &mut acc) {
             return InputDecision {
                 block_reason: Some(reason),
                 request,
-                score: worst,
-                reasons,
+                score: acc.worst,
+                reasons: acc.reasons,
+                owasp: acc.owasp,
+                atlas: acc.atlas,
             };
         }
     }
@@ -63,8 +88,10 @@ pub fn decide_input(fw: &Firewall, mut request: ChatRequest) -> InputDecision {
     InputDecision {
         block_reason: None,
         request,
-        score: worst,
-        reasons,
+        score: acc.worst,
+        reasons: acc.reasons,
+        owasp: acc.owasp,
+        atlas: acc.atlas,
     }
 }
 
@@ -73,24 +100,21 @@ pub struct AnthropicInputDecision {
     pub request: AnthropicRequest,
     pub score: u8,
     pub reasons: Vec<String>,
+    pub owasp: Vec<String>,
+    pub atlas: Vec<String>,
 }
 
 /// Scan an Anthropic `content` / `system` value (a plain string, or an array of typed
 /// blocks): mask `text` in place, or return a block reason on the first blocking verdict.
-fn scan_content(
-    fw: &Firewall,
-    content: &mut Value,
-    worst: &mut u8,
-    reasons: &mut Vec<String>,
-) -> Option<String> {
+fn scan_content(fw: &Firewall, content: &mut Value, acc: &mut Acc) -> Option<String> {
     match content {
-        Value::String(s) => scan_segment(fw, s, worst, reasons),
+        Value::String(s) => scan_segment(fw, s, acc),
         Value::Array(blocks) => {
             for block in blocks.iter_mut() {
                 let is_text = block.get("type").and_then(Value::as_str) == Some("text");
                 if is_text {
                     if let Some(Value::String(s)) = block.get_mut("text") {
-                        if let Some(reason) = scan_segment(fw, s, worst, reasons) {
+                        if let Some(reason) = scan_segment(fw, s, acc) {
                             return Some(reason);
                         }
                     }
@@ -108,26 +132,29 @@ pub fn decide_input_anthropic(
     fw: &Firewall,
     mut request: AnthropicRequest,
 ) -> AnthropicInputDecision {
-    let mut worst = 0u8;
-    let mut reasons = Vec::new();
+    let mut acc = Acc::default();
 
     if let Some(system) = request.system.as_mut() {
-        if let Some(reason) = scan_content(fw, system, &mut worst, &mut reasons) {
+        if let Some(reason) = scan_content(fw, system, &mut acc) {
             return AnthropicInputDecision {
                 block_reason: Some(reason),
                 request,
-                score: worst,
-                reasons,
+                score: acc.worst,
+                reasons: acc.reasons,
+                owasp: acc.owasp,
+                atlas: acc.atlas,
             };
         }
     }
     for msg in request.messages.iter_mut() {
-        if let Some(reason) = scan_content(fw, &mut msg.content, &mut worst, &mut reasons) {
+        if let Some(reason) = scan_content(fw, &mut msg.content, &mut acc) {
             return AnthropicInputDecision {
                 block_reason: Some(reason),
                 request,
-                score: worst,
-                reasons,
+                score: acc.worst,
+                reasons: acc.reasons,
+                owasp: acc.owasp,
+                atlas: acc.atlas,
             };
         }
     }
@@ -135,8 +162,10 @@ pub fn decide_input_anthropic(
     AnthropicInputDecision {
         block_reason: None,
         request,
-        score: worst,
-        reasons,
+        score: acc.worst,
+        reasons: acc.reasons,
+        owasp: acc.owasp,
+        atlas: acc.atlas,
     }
 }
 

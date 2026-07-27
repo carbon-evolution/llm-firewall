@@ -12,6 +12,7 @@ mod severity;
 mod util;
 
 pub mod detectors;
+pub mod taxonomy;
 
 pub use context::{Context, Direction};
 pub use detector::Detector;

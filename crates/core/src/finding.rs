@@ -20,6 +20,12 @@ pub struct Finding {
     pub label: String,
     /// Direction of travel this finding was observed on.
     pub direction: Direction,
+    /// OWASP LLM Top 10 (2025) category, auto-derived from the detector id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owasp: Option<String>,
+    /// MITRE ATLAS technique id, auto-derived from the detector id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub atlas: Option<String>,
 }
 
 impl Finding {
@@ -29,13 +35,18 @@ impl Finding {
         confidence: f32,
         label: impl Into<String>,
     ) -> Self {
+        let detector = detector.into();
+        let owasp = crate::taxonomy::owasp(&detector).map(String::from);
+        let atlas = crate::taxonomy::atlas(&detector).map(String::from);
         Self {
-            detector: detector.into(),
+            detector,
             severity,
             confidence: confidence.clamp(0.0, 1.0),
             span: None,
             label: label.into(),
             direction: Direction::Input,
+            owasp,
+            atlas,
         }
     }
 

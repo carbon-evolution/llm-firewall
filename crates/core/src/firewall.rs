@@ -23,6 +23,11 @@ impl Firewall {
         Self { detectors, policy }
     }
 
+    /// The ids of the configured detectors (for coverage/compliance reporting).
+    pub fn detector_names(&self) -> Vec<&'static str> {
+        self.detectors.iter().map(|d| d.name()).collect()
+    }
+
     /// Inspect `text` moving in `direction`; return the decision + evidence.
     pub fn run(&self, text: &str, direction: Direction) -> Outcome {
         let ctx = Context { text, direction };

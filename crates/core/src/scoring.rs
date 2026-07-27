@@ -99,6 +99,8 @@ mod tests {
             span: None,
             label: "bad".into(),
             direction: crate::Direction::Input,
+            owasp: None,
+            atlas: None,
         };
         assert_eq!(score_findings(&[good, bad]).score, 85);
     }

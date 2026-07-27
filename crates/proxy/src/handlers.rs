@@ -81,7 +81,14 @@ pub async fn chat_completions(
 
     let decision = decide_input(&state.firewall, req);
     if let Some(reason) = decision.block_reason {
-        audit_block(&request_id, decision.score, decision.reasons, started);
+        audit_block(
+            &request_id,
+            decision.score,
+            decision.reasons,
+            decision.owasp,
+            decision.atlas,
+            started,
+        );
         return (StatusCode::BAD_REQUEST, Json(error_body(&reason))).into_response();
     }
 
@@ -123,7 +130,14 @@ pub async fn chat_completions(
         return (StatusCode::BAD_GATEWAY, Json(error_body(&reason))).into_response();
     }
 
-    audit_allow(&request_id, decision.score, decision.reasons, started);
+    audit_allow(
+        &request_id,
+        decision.score,
+        decision.reasons,
+        decision.owasp,
+        decision.atlas,
+        started,
+    );
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -139,7 +153,14 @@ pub async fn messages(
 
     let decision = decide_input_anthropic(&state.firewall, req);
     if let Some(reason) = decision.block_reason {
-        audit_block(&request_id, decision.score, decision.reasons, started);
+        audit_block(
+            &request_id,
+            decision.score,
+            decision.reasons,
+            decision.owasp,
+            decision.atlas,
+            started,
+        );
         return (StatusCode::BAD_REQUEST, Json(anthropic_error_body(&reason))).into_response();
     }
 
@@ -190,7 +211,14 @@ pub async fn messages(
         return (StatusCode::BAD_GATEWAY, Json(anthropic_error_body(&reason))).into_response();
     }
 
-    audit_allow(&request_id, decision.score, decision.reasons, started);
+    audit_allow(
+        &request_id,
+        decision.score,
+        decision.reasons,
+        decision.owasp,
+        decision.atlas,
+        started,
+    );
     (StatusCode::OK, Json(body)).into_response()
 }
 
@@ -275,6 +303,8 @@ async fn proxy_stream(
                     decision: "block".into(),
                     score: 0,
                     reasons: vec!["output policy violation".into()],
+                    owasp: Vec::new(),
+                    atlas: Vec::new(),
                     latency_ms: started.elapsed().as_millis(),
                 }
                 .emit();
@@ -290,6 +320,8 @@ async fn proxy_stream(
             decision: "stream_done".into(),
             score: 0,
             reasons: vec![],
+            owasp: Vec::new(),
+            atlas: Vec::new(),
             latency_ms: started.elapsed().as_millis(),
         }
         .emit();
@@ -302,28 +334,49 @@ async fn proxy_stream(
         .unwrap()
 }
 
-fn audit_block(request_id: &str, score: u8, reasons: Vec<String>, started: Instant) {
+#[allow(clippy::too_many_arguments)]
+fn audit_input(
+    request_id: &str,
+    decision: &str,
+    score: u8,
+    reasons: Vec<String>,
+    owasp: Vec<String>,
+    atlas: Vec<String>,
+    started: Instant,
+) {
     AuditRecord {
         request_id: request_id.to_string(),
         direction: "input".into(),
-        decision: "block".into(),
+        decision: decision.into(),
         score,
         reasons,
+        owasp,
+        atlas,
         latency_ms: started.elapsed().as_millis(),
     }
     .emit();
 }
 
-fn audit_allow(request_id: &str, score: u8, reasons: Vec<String>, started: Instant) {
-    AuditRecord {
-        request_id: request_id.to_string(),
-        direction: "input".into(),
-        decision: "allow".into(),
-        score,
-        reasons,
-        latency_ms: started.elapsed().as_millis(),
-    }
-    .emit();
+fn audit_block(
+    request_id: &str,
+    score: u8,
+    reasons: Vec<String>,
+    owasp: Vec<String>,
+    atlas: Vec<String>,
+    started: Instant,
+) {
+    audit_input(request_id, "block", score, reasons, owasp, atlas, started);
+}
+
+fn audit_allow(
+    request_id: &str,
+    score: u8,
+    reasons: Vec<String>,
+    owasp: Vec<String>,
+    atlas: Vec<String>,
+    started: Instant,
+) {
+    audit_input(request_id, "allow", score, reasons, owasp, atlas, started);
 }
 
 fn audit_output_block(request_id: &str, reason: &str, started: Instant) {
@@ -333,6 +386,8 @@ fn audit_output_block(request_id: &str, reason: &str, started: Instant) {
         decision: "block".into(),
         score: 0,
         reasons: vec![reason.to_string()],
+        owasp: Vec::new(),
+        atlas: Vec::new(),
         latency_ms: started.elapsed().as_millis(),
     }
     .emit();

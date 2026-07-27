@@ -1,6 +1,7 @@
 mod dataset;
 mod evaluate;
 mod metrics;
+mod report;
 mod rivals;
 mod scorecard;
 
@@ -29,6 +30,9 @@ struct Cli {
     /// ml_p} to this JSONL path in a single ML pass, for offline threshold sweeps.
     #[arg(long)]
     dump_features: Option<String>,
+    /// Write an OWASP LLM Top 10 (2025) coverage/risk report (Markdown) to this path.
+    #[arg(long)]
+    report: Option<String>,
 }
 
 fn core_guard(threshold: u8) -> CoreGuard {
@@ -142,6 +146,12 @@ fn main() -> anyhow::Result<()> {
 
     let mut results: Vec<EvalResult> = Vec::new();
     let core = core_guard(cli.threshold);
+
+    if let Some(path) = &cli.report {
+        std::fs::write(path, report::build_report(&core.firewall, &data))?;
+        eprintln!("wrote compliance report to {path}");
+    }
+
     results.push(evaluate(&core, &data));
 
     for spec in &cli.rival {
