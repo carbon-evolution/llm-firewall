@@ -6,7 +6,7 @@ prompts and responses flowing between your app and an LLM. It speaks both the **
 of the provider and every request is checked, scored, and logged — **no app changes required**.
 
 ![CI](https://github.com/carbon-evolution/llm-firewall/actions/workflows/ci.yml/badge.svg)
-![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Release](https://img.shields.io/github/v/release/carbon-evolution/llm-firewall?sort=semver)
 ![GHCR](https://img.shields.io/badge/ghcr.io-container-2496ed?logo=docker&logoColor=white)
 ![Rust](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)
@@ -385,11 +385,9 @@ The optional ML stage builds with `--features ml` (pulls `candle`); the default 
 
 ## License
 
-Copyright © 2026 **Arthur Lin** ([carbon-evolution](https://github.com/carbon-evolution)). All rights reserved by the author.
+Copyright © 2026 **Arthur Lin** ([carbon-evolution](https://github.com/carbon-evolution)).
 
-Licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)** — see [`LICENSE`](LICENSE).
+Licensed under the **Apache License, Version 2.0** — see [`LICENSE`](LICENSE).
 
-In plain terms: you may use, study, modify, and redistribute this software freely, **but** any modified
-version — including one you run as a hosted/network service — must be released under the same AGPL-3.0
-license with its complete source made available to users. This keeps the project and all derivatives
-open. For a proprietary/commercial license that lifts these terms, contact the author.
+You may use, modify, and redistribute this software (including in proprietary products) provided you
+retain the copyright and license notices; the license also includes an explicit patent grant.
