@@ -38,3 +38,22 @@ the Hugging Face datasets-server REST API — standard library only, no `pip ins
   directly (policy rule on the `injection.ml` detector id), independent of the risk-score banding.
   Because the DeBERTa model is well-calibrated (benign ≈ 0), honoring the 0.5 boundary rather than an
   accidental ~0.85 cutoff lifts recall ~5–12 points with no measurable FPR change.
+
+## Obfuscation resilience
+
+- **Method.** We transform the *malicious* rows of a recognized corpus with the same evasion
+  techniques trusted red-team tools apply — **Unicode UTS #39** confusables (homoglyphs),
+  **Trojan-Source** zero-width insertion, and **NVIDIA garak / Microsoft PyRIT** base64 wrapping
+  (`scripts/obfuscate-dataset.py`) — then compare recall `--no-normalize` (baseline) vs. with the
+  dual-scan normalization pre-pass. Benign rows are left untouched so FPR is measured on controls,
+  including a **multilingual benign set** (Russian/Greek/Arabic/Japanese/accented + emoji).
+- **Result (safe-guard, rule-based build, no ML).** Homoglyph and zero-width obfuscation drop recall
+  from the clean 14.6% to **0.0%** (regex cannot match the altered bytes); the pre-pass restores it to
+  **~14.5%** (and base64 to 30.6%), with **0.00% FPR** on the multilingual control — no over-defense.
+- **Honest caveat.** The **DeBERTa ML stage is already largely robust** to these obfuscations on its
+  own (homoglyph ~97–99%, zero-width ~100% recall even without the pre-pass, because anomalous text
+  scores high). So the pre-pass's decisive value is (a) protecting the fast **rule-only default build**
+  and (b) making detection *principled* — acting on the decoded attack, not merely on "looks weird."
+- **Dual-scan / no over-defense.** Obfuscation is never itself a block reason; the pre-pass only adds
+  signal when the de-obfuscated text triggers a real detector, so legitimate multilingual/data-bearing
+  prompts pass through unchanged (see `firewall.rs`). Base64 decoding is opt-in.

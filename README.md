@@ -327,6 +327,41 @@ cargo run --release -p llm-firewall-bench -- \
 This produces a coverage matrix (which OWASP categories the active detectors map to) plus observed
 findings by category and detector — see the tags in the audit log too.
 
+### Obfuscation resilience (evasion normalization)
+
+Attackers hide injections with zero-width characters, Unicode homoglyphs (`іgnore` with a Cyrillic
+`і`), or base64 wrapping. A **normalization pre-pass** de-obfuscates a *copy* of the text before
+detection (dual-scan: the original is still what gets forwarded/masked, and obfuscation alone is never
+a block reason — only a decoded *attack* is). Measured on `safe-guard` with the malicious rows
+transformed using the techniques trusted red-team tools apply (Unicode UTS #39 confusables,
+Trojan-Source zero-width, NVIDIA garak / Microsoft PyRIT base64):
+
+**Rule layer (regex + heuristics, no ML) — the layer obfuscation actually defeats:**
+
+| safe-guard, malicious recall | no pre-pass | + pre-pass |
+|---|--:|--:|
+| clean (no obfuscation) | 14.6% | 14.6% |
+| homoglyph (Cyrillic) | **0.0%** | **14.5%** |
+| zero-width split | **0.0%** | **14.5%** |
+| base64-wrapped (opt-in tier) | **0.0%** | **30.6%** |
+
+Obfuscation strips the rule layer's recall to **0%**; the pre-pass **restores it to the clean rate**
+(and higher for base64, whose decoded payload adds signal) — with **no false positives** on a
+multilingual benign control (Russian / Greek / Arabic / Japanese / accented + emoji: **0.00% FPR**,
+unchanged).
+
+**Note on the ML layer:** the DeBERTa stage is already largely robust to these obfuscations on its own
+(homoglyph 97% → 99%, zero-width 100% recall *without* the pre-pass — it flags the anomalous text), so
+the pre-pass adds a smaller lift there. Its decisive value is protecting the **fast rule-only default
+build** and making detection *principled* (catching the decoded attack, not merely "this looks weird").
+
+```bash
+# reproduce: obfuscate the malicious rows, then compare baseline vs. protected
+python3 scripts/obfuscate-dataset.py datasets/safe_guard.jsonl datasets/sg_homo.jsonl homoglyph
+cargo run --release -p llm-firewall-bench -- --dataset datasets/sg_homo.jsonl --no-normalize  # 0.0%
+cargo run --release -p llm-firewall-bench -- --dataset datasets/sg_homo.jsonl               # 14.5%
+```
+
 ### Understanding the numbers (plain English)
 
 Think of the firewall like an airport checkpoint: a **fast metal detector** (the pattern rules)

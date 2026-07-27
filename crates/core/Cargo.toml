@@ -10,6 +10,8 @@ description = "Detection engine for the LLM Firewall: injection/PII/secret detec
 regex.workspace = true
 serde = { workspace = true }
 serde_yaml = "0.9"
+unicode-normalization = "0.1"
+base64 = "0.22"
 
 # Optional ML dependencies (off by default; enabled via the `ml` feature).
 candle-core = { version = "0.8", optional = true }

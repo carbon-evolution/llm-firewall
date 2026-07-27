@@ -1,5 +1,6 @@
 //! Proxy configuration: `firewall.yaml` with env-var overrides.
 
+use llm_firewall_core::Normalizer;
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -18,6 +19,41 @@ pub struct Upstream {
     pub anthropic_base: String,
 }
 
+/// Obfuscation/evasion normalization pre-pass config (all default on except base64).
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct NormalizeCfg {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub strip_zero_width: bool,
+    #[serde(default = "default_true")]
+    pub fold_homoglyphs: bool,
+    #[serde(default)]
+    pub decode_encoded: bool,
+}
+
+impl Default for NormalizeCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            strip_zero_width: true,
+            fold_homoglyphs: true,
+            decode_encoded: false,
+        }
+    }
+}
+
+impl NormalizeCfg {
+    /// Build a `Normalizer` when enabled; `None` disables the pre-pass entirely.
+    pub fn to_normalizer(&self) -> Option<Normalizer> {
+        self.enabled.then_some(Normalizer {
+            strip_zero_width: self.strip_zero_width,
+            fold_homoglyphs: self.fold_homoglyphs,
+            decode_encoded: self.decode_encoded,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     #[serde(default = "default_bind")]
@@ -30,6 +66,8 @@ pub struct Config {
     pub fail_mode: FailMode,
     #[serde(default = "default_window")]
     pub stream_window: usize,
+    #[serde(default)]
+    pub normalize: NormalizeCfg,
 }
 
 fn default_bind() -> String {
@@ -46,6 +84,9 @@ fn default_fail() -> FailMode {
 }
 fn default_window() -> usize {
     64
+}
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Upstream {
