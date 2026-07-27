@@ -649,42 +649,46 @@ running firewall, and report the resilience score. Because a raw model's own rob
 report the **delta**: garak against the *raw upstream* vs. against the *firewall (base64 tier on)* —
 which isolates the firewall's contribution.
 
-**Prerequisites (manual, needs network + a live model + small API cost):** `pip install garak`, and a
-reachable upstream — either a real key (`gpt-4o-mini` is cheap) or a local Ollama model via its
-OpenAI-compatible endpoint (zero cost).
+**Upstream (chosen): a local LM Studio server — free, no API key, localhost-only.** In LM Studio,
+load a **3–4B+ model (e.g. Gemma 4B)** — *not* a <2B model (too weak to decode base64, which would
+inflate the raw baseline and shrink the measured delta) — and start its server (Developer →
+**Start Server**, default `http://localhost:1234/v1`, OpenAI-compatible). Note the exact model id it
+reports (`curl -s http://localhost:1234/v1/models`). garak's `openai` generator still requires
+`OPENAI_API_KEY` to be *set*, so use any dummy value (LM Studio ignores it).
 
 - [ ] **Step 1: Install garak, pin the version**
 
 ```bash
 python3 -m pip install garak
 garak --version    # record this in docs/garak-validation.md
+export OPENAI_API_KEY=lm-studio          # dummy; LM Studio ignores it
+export LMS_MODEL="$(curl -s http://localhost:1234/v1/models | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"][0]["id"])')"
+echo "LM Studio model: $LMS_MODEL"
 ```
 
-- [ ] **Step 2: Baseline — garak against the RAW upstream (no firewall)**
+- [ ] **Step 2: Baseline — garak straight at LM Studio (no firewall)**
 
 ```bash
-export OPENAI_BASE_URL=https://api.openai.com/v1     # or your Ollama :11434/v1
-export OPENAI_API_KEY=sk-...                         # real key
-garak --model_type openai --model_name gpt-4o-mini \
+export OPENAI_BASE_URL=http://localhost:1234/v1      # LM Studio directly
+garak --model_type openai --model_name "$LMS_MODEL" \
       --probes encoding --generations 1 --report_prefix raw_baseline
 ```
-Capture the `encoding.*` resilience/pass rate — this shows which encoded-injection probes get through
-an unprotected model.
+Capture the `encoding.*` resilience/pass rate — which encoded-injection probes get through the model
+with no firewall in front.
 
-- [ ] **Step 3: Protected — garak against the FIREWALL (base64 tier ON)**
+- [ ] **Step 3: Protected — garak through the FIREWALL (base64 tier ON) → LM Studio**
 
 Start the firewall with the base64 tier enabled (in `firewall.yaml`: `normalize: { decode_encoded: true }`),
-pointed at the same upstream:
+forwarding to LM Studio:
 
 ```bash
-LLM_FW_OPENAI_BASE=https://api.openai.com cargo run --release -p llm-firewall   # listens :8080
+LLM_FW_OPENAI_BASE=http://localhost:1234 cargo run --release -p llm-firewall   # firewall on :8080
 ```
 Then, in another shell, point garak at the firewall:
 
 ```bash
-export OPENAI_BASE_URL=http://localhost:8080/v1
-export OPENAI_API_KEY=sk-...                         # forwarded upstream by the firewall
-garak --model_type openai --model_name gpt-4o-mini \
+export OPENAI_BASE_URL=http://localhost:8080/v1      # garak -> firewall -> LM Studio
+garak --model_type openai --model_name "$LMS_MODEL" \
       --probes encoding --generations 1 --report_prefix fw_protected
 ```
 
