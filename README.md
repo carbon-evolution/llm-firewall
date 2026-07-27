@@ -80,6 +80,47 @@ flowchart LR
     A -->|clean, confident| OK
 ```
 
+## How the risk score works
+
+Every detector that fires produces a **finding** with two properties: a **severity** (how dangerous the
+category is) and a **confidence** (how sure the detector is, `0.0–1.0`). The firewall combines all
+findings on a message into a single **risk score from 0 to 100**.
+
+Each severity carries a fixed weight:
+
+| Severity | Info | Low | Medium | High | Critical |
+|---|---|---|---|---|---|
+| Weight | 0.10 | 0.30 | 0.60 | 0.85 | 0.98 |
+
+A single finding's **contribution** is `weight × confidence`. The findings are then combined with a
+**noisy-OR** rule (the same math used to combine independent probabilities):
+
+```
+combined = 1 − (1 − c₁) × (1 − c₂) × … × (1 − cₙ)      score = round(combined × 100)
+```
+
+**Why this formula (in plain terms):**
+- **Diminishing returns.** Many weak signals *add up* — two separate `Low` hits give `1 − 0.7×0.7 = 0.51`
+  (score 51), more than either alone — but they never falsely rocket to 100. Piling on more weak hits
+  yields ever-smaller increases.
+- **Strong findings dominate.** A single `Critical` (0.98) outranks a whole pile of `Low`s, so one clear
+  attack is never "diluted" by surrounding benign text.
+- **Bounded and stable.** The result always lands in 0–100 and can't be pushed past it, so thresholds
+  mean the same thing everywhere.
+
+**Worked examples:**
+
+| Findings on a message | Score |
+|---|---|
+| One `High` injection, confidence 0.9 → `0.85 × 0.9 = 0.765` | **77** |
+| Two independent `Low` signals, confidence 1.0 each → `1 − 0.7²` | **51** |
+| One `Critical` secret, confidence 1.0 | **98** |
+| Nothing found | **0** |
+
+The score (together with per-detector findings) is what the **YAML policy** then acts on — e.g. *block if
+`risk_score_gte: 85`*, *block any `High` injection*, *mask any `pii`*. So scoring measures "how risky",
+and the policy decides "what to do about it". (Implementation: `crates/core/src/scoring.rs`.)
+
 ---
 
 ## Prerequisites — what you need beforehand
