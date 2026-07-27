@@ -12,7 +12,7 @@ use clap::Parser;
 #[cfg(feature = "ml")]
 use llm_firewall_core::ModerationDetector;
 use llm_firewall_core::{
-    Firewall, InjectionDetector, OutputDetector, PiiDetector, PolicySet, SecretDetector,
+    Firewall, InjectionDetector, Normalizer, OutputDetector, PiiDetector, PolicySet, SecretDetector,
 };
 
 use crate::evaluate::{evaluate, CoreGuard, EvalResult, Guard};
@@ -44,9 +44,13 @@ struct Cli {
     /// injection scorecard stays clean; enable to evaluate harmful-content datasets.
     #[arg(long, default_value_t = false)]
     moderation: bool,
+    /// Disable the obfuscation/evasion normalization pre-pass (on by default). Use to
+    /// measure the baseline vs. protected recall on obfuscated corpora.
+    #[arg(long, default_value_t = false)]
+    no_normalize: bool,
 }
 
-fn core_guard(threshold: u8, moderation: bool) -> CoreGuard {
+fn core_guard(threshold: u8, moderation: bool, normalize: bool) -> CoreGuard {
     let policy = PolicySet::from_yaml(
         "policies:\n  - name: block-injection-high\n    when: { detector: injection, min_severity: high }\n    action: block\n  - name: block-ml-positive\n    when: { detector: injection.ml }\n    action: block\n  - name: block-moderation\n    when: { detector: moderation }\n    action: block\ndefault: allow\n",
     )
@@ -96,8 +100,12 @@ fn core_guard(threshold: u8, moderation: bool) -> CoreGuard {
         eprintln!("Moderation: requires the `ml` feature; ignored.");
     }
 
+    let mut firewall = Firewall::new(detectors, policy);
+    if normalize {
+        firewall = firewall.with_normalizer(Normalizer::default());
+    }
     CoreGuard {
-        firewall: Firewall::new(detectors, policy),
+        firewall,
         threshold,
     }
 }
@@ -178,7 +186,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     let mut results: Vec<EvalResult> = Vec::new();
-    let core = core_guard(cli.threshold, cli.moderation);
+    let core = core_guard(cli.threshold, cli.moderation, !cli.no_normalize);
 
     if let Some(path) = &cli.report {
         std::fs::write(path, report::build_report(&core.firewall, &data))?;

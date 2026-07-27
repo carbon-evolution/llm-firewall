@@ -25,7 +25,7 @@ pub fn build_firewall(cfg: &Config) -> anyhow::Result<Firewall> {
         Some(p) => PolicySet::from_yaml(&std::fs::read_to_string(p)?)?,
         None => PolicySet::from_yaml("default: allow")?,
     };
-    Ok(Firewall::new(
+    let mut fw = Firewall::new(
         vec![
             Box::new(InjectionDetector::new()),
             Box::new(SecretDetector::new()),
@@ -35,7 +35,11 @@ pub fn build_firewall(cfg: &Config) -> anyhow::Result<Firewall> {
             Box::new(ModerationDetector::new()),
         ],
         policy,
-    ))
+    );
+    if let Some(n) = cfg.normalize.to_normalizer() {
+        fw = fw.with_normalizer(n);
+    }
+    Ok(fw)
 }
 
 /// The axum router.
@@ -57,5 +61,6 @@ pub fn test_config(base: String) -> Config {
         policy_file: None,
         fail_mode: FailMode::FailClosed,
         stream_window: 64,
+        normalize: config::NormalizeCfg::default(),
     }
 }
