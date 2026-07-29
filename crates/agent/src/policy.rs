@@ -58,7 +58,14 @@ pub struct Signals {
 }
 
 /// All present sub-conditions are ANDed. Absent fields are ignored.
+///
+/// `deny_unknown_fields`: a typo'd condition key (`detecter` for `detector`) must be a
+/// parse error, not a silently-ignored field. Silently ignoring it would leave `when: {}`
+/// in effect, which matches every event of the rule's shape — a fat-fingered narrow rule
+/// becomes a catch-all, and if its action is `allow` it disables every rule below it. A
+/// security policy failing open on a typo, with no diagnostic, is worse than a hard error.
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentCondition {
     #[serde(default)]
     pub taint: Option<Vec<TaintSource>>,
@@ -88,6 +95,7 @@ pub struct AgentCondition {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentRule {
     pub name: String,
     pub when: AgentCondition,
@@ -101,6 +109,7 @@ fn default_verdict() -> Verdict {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentPolicySet {
     #[serde(default)]
     pub agent_policies: Vec<AgentRule>,
@@ -360,5 +369,48 @@ default: allow
         let yaml = include_str!("../policies/agent-default.yaml");
         let p = AgentPolicySet::from_yaml(yaml).expect("shipped policy must parse");
         assert!(!p.agent_policies.is_empty());
+    }
+
+    #[test]
+    fn a_detected_secret_over_the_network_denies_even_with_a_sensitive_path() {
+        // Regression pin: deny-secret-egress must win over ask-sensitive-path-egress
+        // when a single event matches both. A network send that both touches a
+        // credential-shaped path AND carries a detected Critical secret finding is
+        // the strongest signal the system can produce; it must never be downgraded
+        // to a prompt by a weaker rule that happens to be evaluated first.
+        let yaml = include_str!("../policies/agent-default.yaml");
+        let p = AgentPolicySet::from_yaml(yaml).expect("shipped policy must parse");
+        let mut s = signals();
+        s.action_class = Some(ActionClass::Network);
+        s.touches_sensitive_path = true;
+        s.findings = vec![(
+            crate::facet::Facet::ToolArgs,
+            Finding::new("secret.aws_key", Severity::Critical, 0.99, "AWS key"),
+        )];
+        let d = p.evaluate(&s);
+        assert_eq!(d.verdict, Verdict::Deny);
+        assert_eq!(d.rule.as_deref(), Some("deny-secret-egress"));
+    }
+
+    #[test]
+    fn a_typo_d_condition_key_is_a_parse_error_not_a_silent_catch_all() {
+        // Before `deny_unknown_fields`: `detecter` (typo for `detector`) parsed
+        // successfully, leaving `when: {}` in effect, which matches every event of
+        // the rule's action-class shape. A fat-fingered narrow rule silently became
+        // a catch-all. This must now be a hard parse error with no valid policy.
+        let bad_yaml = r#"
+agent_policies:
+  - name: typo-rule
+    when: { detecter: secret, min_action_class: network }
+    action: deny
+default: allow
+"#;
+        let err = AgentPolicySet::from_yaml(bad_yaml)
+            .expect_err("a typo'd condition key must fail to parse, not silently match everything");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("detecter") || msg.contains("unknown field"),
+            "expected the error to name the bad field, got: {msg}"
+        );
     }
 }

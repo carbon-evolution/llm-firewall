@@ -1,5 +1,11 @@
 # Default agent policy. First match wins; anything unmatched falls through to `default`.
 # Verdicts: allow | ask | deny.
+#
+# Ordering rule for this file: all `deny` rules come before all `ask` rules. Since
+# first-match-wins means ordering encodes precedence, a weaker verdict must never
+# pre-empt a stronger one on an overlapping condition — e.g. a network send that is
+# both a sensitive-path reference AND a detected secret must resolve to `deny`, not
+# to a weaker `ask` rule that happened to be listed first.
 agent_policies:
   # Untrusted content driving a destructive action is the canonical indirect-injection
   # kill chain. Never merely ask.
@@ -19,19 +25,21 @@ agent_policies:
     action: deny
     message: "Blocked: subagent requested tools beyond its parent's grant"
 
-  # A credential-shaped path plus an outbound send. Neither is alarming alone —
-  # repos are full of `.env.example` and `credentials.md`, and sending data is
-  # routine — but reading one and then posting is the exfiltration shape.
-  - name: ask-sensitive-path-egress
-    when: { touches_sensitive_path: true, min_action_class: network }
-    action: ask
-    message: "This call sends data and references a credential path. Allow?"
-
   # Secrets or PII heading out over the network.
   - name: deny-secret-egress
     when: { detector: secret, facet: tool_args, min_action_class: network }
     action: deny
     message: "Blocked: secret in the arguments of a network call"
+
+  # A credential-shaped path plus an outbound send. Neither is alarming alone —
+  # repos are full of `.env.example` and `credentials.md`, and sending data is
+  # routine — but reading one and then posting is the exfiltration shape. Sits
+  # after deny-secret-egress: a call that is both a sensitive-path reference AND a
+  # detected secret must deny, not merely ask.
+  - name: ask-sensitive-path-egress
+    when: { touches_sensitive_path: true, min_action_class: network }
+    action: ask
+    message: "This call sends data and references a credential path. Allow?"
 
   - name: ask-pii-egress
     when: { detector: pii, facet: tool_args, min_action_class: network }
