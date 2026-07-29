@@ -1025,6 +1025,17 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_session_id_maps_to_none_rather_than_a_shared_bucket() {
+        // Found in Task 4: `session_id` is required to be PRESENT but serde does not
+        // require it to be non-empty. Everything — taint, sequence numbers, session
+        // isolation — is keyed by it, so an empty id would collapse unrelated
+        // sessions into one shared taint pool. That is exactly the cross-session
+        // leak the required-field rule exists to prevent, so refuse to inspect.
+        let p = payload(r#"{"session_id":"","hook_event_name":"PreToolUse","tool_name":"Bash"}"#);
+        assert!(to_event(&p, 1, 0, 100).is_none());
+    }
+
+    #[test]
     fn oversized_content_is_truncated_at_the_cap() {
         // Measured: record() on 10 MB costs 532 ms, far past the hook budget.
         let big = "x".repeat(5000);
@@ -1160,6 +1171,13 @@ fn truncate(mut s: String, max: usize) -> String {
 /// Map one hook payload to an `AgentEvent`. `None` means "nothing to inspect" —
 /// an event kind this build does not handle.
 pub fn to_event(p: &HookPayload, seq: u64, at_ms: u64, max_bytes: usize) -> Option<AgentEvent> {
+    // Everything is keyed by session. An empty id would bucket unrelated sessions
+    // into one shared taint pool — a cross-session leak, and worse than declining
+    // to inspect. serde requires the field to be present but not to be non-empty.
+    if p.session_id.is_empty() {
+        return None;
+    }
+
     let kind = match p.event {
         HookEvent::PreToolUse => EventKind::ToolCall {
             tool: p.tool_name.clone().unwrap_or_default(),
