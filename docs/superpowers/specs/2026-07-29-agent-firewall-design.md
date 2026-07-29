@@ -181,17 +181,39 @@ impl AgentEvent {
 }
 ```
 
-- `ToolCall.args` → every string leaf, projected as `Direction::Output` (data *leaving* toward a
-  tool) → run `secret`, `pii` detectors. This is exfiltration detection, for free.
+- `ToolCall.args` → string leaves, joined, projected as `Direction::Output` (data *leaving* toward a
+  tool) → run `secret`, `pii`, `output` detectors. This is exfiltration and dangerous-command
+  detection.
 - `ToolResult.content` → projected as `Direction::Input` (data *entering* the model's context) →
-  run `injection`, `output` detectors. This is indirect prompt injection detection, for free.
+  run `injection`. This is indirect prompt injection detection.
 - `SubagentSpawn.instructions` and `ManifestSeen` tool descriptions → `Direction::Input` →
-  run `injection`. This is tool-description poisoning detection, for free.
+  run `injection`. This is tool-description poisoning detection.
 
 **This projection is the single highest-leverage idea in the design.** Three of the four threat
 classes are covered by detectors that already exist, already have tuned thresholds, and already carry
 OWASP/ATLAS tags — they simply have never been pointed at this data. Only the taint tracker and the
 destructive-action rules are genuinely new code.
+
+> **Corrected 2026-07-29 after the Task 2 code review, which verified these claims against the real
+> detectors rather than assuming them. Two things I had wrong:**
+>
+> 1. **`Direction` is a label and a policy key — not a detection switch.** `SecretDetector`,
+>    `PiiDetector`, and `InjectionDetector` all compute findings from `ctx.text` alone and then stamp
+>    `ctx.direction` onto the resulting `Finding` as metadata. None of them branch on it. So
+>    projecting arguments as `Output` does not by itself "buy" exfiltration detection — *running
+>    `secret`/`pii` over the argument text* buys it, and that would work identically under `Input`.
+>    The direction mapping still earns its place, for two real reasons: `core::policy::Condition`
+>    can gate rules on `direction`, and it is the honest label in the audit log. But it is not doing
+>    detection work, and the README must not imply it is.
+> 2. **`OutputDetector` cannot fire on tool results.** It returns empty immediately when
+>    `direction != Output` (`core/src/detectors/output.rs`), so the markdown-exfil coverage §6.2
+>    claimed for `ToolResult` was unreachable — verified: zero findings on a result containing both
+>    a markdown-exfil image and `rm -rf /`. Resolved by moving `OutputDetector` to the **`ToolArgs`**
+>    facet, which is where it belongs anyway: a dangerous shell command in a `Bash` argument is
+>    precisely LLM05 Improper Output Handling, and arguments are already `Direction::Output`.
+>
+> The "three of four threat classes without new detector code" claim survives both corrections — the
+> detectors do the work and they are genuinely reused. What was wrong was the mechanism I credited.
 
 ---
 
