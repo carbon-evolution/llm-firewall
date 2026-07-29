@@ -448,6 +448,48 @@ ATLAS tags flow into the existing `--report` compliance matrix unchanged.
   are harvested from the user's own real audit logs, which is a corpus almost nobody else has.
 - **CI:** must stay green on the existing 106 tests; no changes to `core`'s public API.
 
+### Benchmarking against recognized public suites (phase 12)
+
+**Commitment:** the agent layer is measured against *recognized public* agent-security benchmarks and
+validated by *trusted external* red-team tooling — never against attacks we wrote ourselves. Self-made
+corpora flatter the tool, which is why the text layer used four public Hugging Face datasets and an
+independent garak run, and the agent layer holds the same line.
+
+**Candidate suites** (verify the actively-maintained set at phase 12 — this field moves quickly):
+
+| Suite | What it measures | Note |
+|---|---|---|
+| **AgentDojo** | Indirect prompt injection against tool-using agents, with utility tasks alongside attacks | Closest match. The utility tasks matter: they measure whether a defence breaks normal work. |
+| **InjecAgent** | Indirect injection in tool-integrated agents, split direct-harm vs. data-stealing | Maps cleanly onto our threat classes §6.1 and §6.2. |
+| **ToolEmu** | Emulated tool sandbox surfacing risky agent actions | Useful for the destructive-action class §6.3. |
+| **AgentHarm** | Harmful agent behaviours | Likely **out of scope**, the agent analogue of JailbreakBench. Label it, don't hide it. |
+| **ASB / WASP** | Broader agent and web-agent security | Survey at phase 12. |
+| **garak, PyRIT** | External red-team validation, run *through* the firewall vs. straight at the agent | Same method as the text layer's garak run. |
+
+**The methodological problem, stated up front.** Text benchmarks are lists of labelled prompts, so
+the harness feeds each through the real detector and tallies a confusion matrix. Agent benchmarks are
+**environments** — they assume a running agent with tools and score whether an attack succeeded end
+to end. This layer is not an agent; it is a policy layer beside one. Two honest approaches, measuring
+different things, and the difference must be disclosed rather than blurred:
+
+1. **Replay** — extract each suite's attack traces into `AgentEvent` sequences and run them through
+   `AgentFirewall::inspect()`. Cheap, reproducible, no model calls. Measures **detection**, not
+   prevention. The trace-extraction method must be published, because a self-serving extraction can
+   flatter the tool badly.
+2. **In-loop** — run the suite's real agent with the phase-09 hook installed, and compare attack
+   success rate with and without. Expensive, needs a live model, but measures **prevention** — what
+   actually matters. This is the more credible of the two, exactly as the in-loop garak run is the
+   more credible result in the current README.
+
+Do replay for the reproducible scorecard, in-loop for a smaller headline figure.
+
+**The benign-corpus gap.** Most agent attack suites ship attacks only, which reproduces the
+JailbreakBench problem: deny everything and score 100%. The two-number standard is not optional here,
+and there is no good public corpus of *benign* agent sessions. Phase 09's audit logs are the answer —
+real sessions, real tools, a real false-positive rate. Given the measured 7-of-15 taint rate on benign
+follow-ups, the over-defense number is the one that decides whether this is usable at all, and it is
+the one nobody else can supply for us.
+
 ---
 
 ## 10. Phasing
