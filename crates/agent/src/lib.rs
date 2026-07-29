@@ -6,6 +6,7 @@
 pub mod action;
 pub mod authority;
 pub mod egress;
+pub mod engine;
 pub mod event;
 pub mod facet;
 pub mod fingerprint;
@@ -15,6 +16,7 @@ pub mod taint;
 pub use action::{classify, touches_sensitive_path, ActionClass};
 pub use authority::{Authority, Escalation};
 pub use egress::{hosts, is_allowed};
+pub use engine::{AgentFirewall, Outcome};
 pub use event::{AgentEvent, AgentId, EventKind, Provenance, SessionId, ToolDecl, Trust};
 pub use facet::{facets, Facet};
 pub use fingerprint::{fingerprints, overlap};
