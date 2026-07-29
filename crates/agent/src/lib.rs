@@ -9,7 +9,7 @@ pub mod facet;
 pub mod fingerprint;
 pub mod taint;
 
-pub use action::{classify, ActionClass};
+pub use action::{classify, touches_sensitive_path, ActionClass};
 pub use event::{AgentEvent, AgentId, EventKind, Provenance, SessionId, ToolDecl, Trust};
 pub use facet::{facets, Facet};
 pub use fingerprint::{fingerprints, overlap};
