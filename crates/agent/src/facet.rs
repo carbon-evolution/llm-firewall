@@ -47,6 +47,11 @@ fn string_leaves(v: &serde_json::Value, out: &mut Vec<String>) {
     }
 }
 
+/// Crate-internal re-export of the JSON string walker, reused by the action classifier.
+pub(crate) fn string_leaves_pub(v: &serde_json::Value, out: &mut Vec<String>) {
+    string_leaves(v, out)
+}
+
 /// Project an event into `(facet, text)` pairs ready for core's detectors.
 pub fn facets(ev: &AgentEvent) -> Vec<(Facet, String)> {
     match &ev.kind {
