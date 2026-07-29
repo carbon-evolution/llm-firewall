@@ -12,8 +12,15 @@ use regex::Regex;
 fn url_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r"(?i)\b[a-z][a-z0-9+.-]*://([a-z0-9._~%-]+(?::[a-z0-9._~%-]+)?@)?([a-z0-9.-]+)")
-            .expect("url regex")
+        // Host group (2) accepts either a bracketed IPv6 literal (`[2001:db8::1]`)
+        // or the bare host/IPv4 character class. Order matters: the bracketed
+        // alternative must come first so `[` is consumed as a literal, not left
+        // for the bare class (which does not contain `[`/`]`/`:` and would just
+        // fail to match at that position).
+        Regex::new(
+            r"(?i)\b[a-z][a-z0-9+.-]*://([a-z0-9._~%-]+(?::[a-z0-9._~%-]+)?@)?(\[[0-9a-f:]+\]|[a-z0-9.-]+)",
+        )
+        .expect("url regex")
     })
 }
 
@@ -25,7 +32,39 @@ fn scp_re() -> &'static Regex {
     })
 }
 
-fn normalize(host: &str) -> Option<String> {
+/// Normalize a host captured after a `scheme://`. The scheme already proves this
+/// is a network destination, so — unlike `normalize_bare_host` — no dot is
+/// required: `http://localhost:3000/x` and `http://myhost/x` must still yield a
+/// host, or a raw-IP / single-label / IPv6 destination sails through the egress
+/// layer invisibly (an empty host list has nothing for policy to compare against
+/// an allowlist, which is a bypass, not merely a gap).
+fn normalize_url_host(host: &str) -> Option<String> {
+    let h = host.trim();
+    if let Some(addr) = h.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        // Bracketed IPv6 literal, e.g. `[2001:db8::1]`. The capturing regex only
+        // ever hands this function the exact `[...]` token (no trailing port —
+        // a port after the closing bracket is not part of the capture group), so
+        // the bracket strip is exact, not a prefix scan. Cannot split on `:` for
+        // a port here regardless, since the address itself is full of colons.
+        if addr.is_empty() {
+            return None;
+        }
+        return Some(addr.to_lowercase());
+    }
+    let h = h.trim_end_matches('.').to_lowercase();
+    let h = h.split(':').next().unwrap_or(&h).to_string();
+    if h.is_empty() {
+        return None;
+    }
+    Some(h)
+}
+
+/// Normalize a bare hostname captured by the scp/ssh `user@host:path` form. A dot
+/// is required here — nothing else about that syntax proves the token is a
+/// network destination rather than incidental text, so the dot is what filters
+/// noise. (The scp regex itself already requires an embedded dot in the host
+/// class, so this is a second, cheap guard rather than the only one.)
+fn normalize_bare_host(host: &str) -> Option<String> {
     let h = host.trim().trim_end_matches('.').to_lowercase();
     let h = h.split(':').next().unwrap_or(&h).to_string();
     if h.is_empty() || !h.contains('.') {
@@ -42,12 +81,12 @@ pub fn hosts(args: &serde_json::Value) -> Vec<String> {
 
     let mut out: BTreeSet<String> = BTreeSet::new();
     for c in url_re().captures_iter(&text) {
-        if let Some(h) = c.get(2).and_then(|m| normalize(m.as_str())) {
+        if let Some(h) = c.get(2).and_then(|m| normalize_url_host(m.as_str())) {
             out.insert(h);
         }
     }
     for c in scp_re().captures_iter(&text) {
-        if let Some(h) = c.get(1).and_then(|m| normalize(m.as_str())) {
+        if let Some(h) = c.get(1).and_then(|m| normalize_bare_host(m.as_str())) {
             out.insert(h);
         }
     }
@@ -176,5 +215,64 @@ mod tests {
     fn extracts_host_not_credentials_from_userinfo_url() {
         let h = hosts(&serde_json::json!({ "url": "https://user:pass@a.com/x" }));
         assert_eq!(h, vec!["a.com".to_string()]);
+    }
+
+    // --- Hazard 4/5 fix: IPv6 literals and dotless scheme-qualified hosts must be
+    // visible to policy. An empty host list is a bypass, not a gap: Task 8's
+    // ask-unknown-host rule fires on hosts NOT in the allowlist, so a host that
+    // never appears at all can never be prompted on. ---
+
+    #[test]
+    fn extracts_bracketed_ipv6_literal_host() {
+        let h = hosts(&serde_json::json!({ "url": "http://[::1]:8080/x" }));
+        assert_eq!(h, vec!["::1".to_string()]);
+    }
+
+    #[test]
+    fn extracts_bracketed_ipv6_literal_without_port() {
+        let h = hosts(&serde_json::json!({ "url": "http://[2001:db8::1]/collect" }));
+        assert_eq!(h, vec!["2001:db8::1".to_string()]);
+    }
+
+    #[test]
+    fn an_ipv6_destination_is_not_allowed_by_an_unrelated_allowlist() {
+        let allow = vec!["github.com".to_string()];
+        assert!(!is_allowed("2001:db8::1", &allow));
+    }
+
+    #[test]
+    fn extracts_localhost_from_a_scheme_qualified_url() {
+        let h = hosts(&serde_json::json!({ "url": "http://localhost:3000/x" }));
+        assert_eq!(h, vec!["localhost".to_string()]);
+    }
+
+    #[test]
+    fn extracts_dotless_bare_host_from_a_scheme_qualified_url() {
+        let h = hosts(&serde_json::json!({ "url": "http://myhost/x" }));
+        assert_eq!(h, vec!["myhost".to_string()]);
+    }
+
+    #[test]
+    fn scp_form_still_requires_a_dot_unlike_scheme_qualified_urls() {
+        // The dot requirement is deliberately kept on the scp/ssh branch, where
+        // nothing else proves a bare token is a network destination.
+        let h = hosts(&serde_json::json!({ "command": "scp f.txt user@localbox:/tmp" }));
+        assert!(h.is_empty(), "expected no host, got {h:?}");
+    }
+
+    // --- Confirm loosening the dot requirement doesn't pull in non-network URI
+    // schemes. `mailto:`/`javascript:`/`data:` lack `://` so are excluded by
+    // construction; `file://` is the one worth checking explicitly. ---
+
+    #[test]
+    fn non_network_uri_schemes_yield_no_bogus_hosts() {
+        assert!(hosts(&serde_json::json!({ "content": "data:text/html;base64,xxx" })).is_empty());
+        assert!(hosts(&serde_json::json!({ "content": "javascript:alert(1)" })).is_empty());
+        assert!(hosts(&serde_json::json!({ "content": "mailto:a@b.com" })).is_empty());
+        // file:// has an empty authority (no host component at all); the `/` that
+        // follows is outside both the bracketed-IPv6 and bare-host character
+        // classes, so the host capture group fails to match and the whole
+        // scheme://... match fails at that position — no host is produced.
+        assert!(hosts(&serde_json::json!({ "content": "file:///etc/passwd" })).is_empty());
     }
 }
