@@ -6,6 +6,7 @@
 
 pub mod config;
 pub mod hook;
+pub mod provenance;
 pub mod token;
 
 pub use config::Config;
