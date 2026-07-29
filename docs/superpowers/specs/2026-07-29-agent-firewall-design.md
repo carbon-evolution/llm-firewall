@@ -293,6 +293,20 @@ The hook collector is a stdin/stdout shim: Claude Code passes hook JSON on stdin
 an `AgentEvent` to the daemon over the socket and writes the decision to stdout. It must be fast and
 it must never hang a session — see the latency budget below.
 
+**Two consequences of the `EventKind::Unknown` fallback that phase 09 must handle** (surfaced by the
+Task 1 code review, 2026-07-29):
+
+1. **Count and log every `Unknown` received.** The fallback means a *typo'd* collector tag is now
+   silently inert where it previously threw a parse error. That is the intended trade — but it also
+   means a collector bug could ship undetected. Emit a warn-level log and a counter so silent
+   degradation is observable. Verified blast radius: a missing `kind` field, a null `kind`, and a
+   known variant with a missing required field all still error loudly, so the catch-all absorbs only
+   genuinely unrecognized kinds. A non-string `kind` (e.g. `123`) does degrade to `Unknown`.
+2. **`Unknown` is lossy on re-serialization.** An event received as `Unknown` re-serializes to
+   `{"kind":"unknown"}` with its original tag and payload discarded. The audit log must therefore
+   record the **raw received bytes** for unknown events, not a re-serialized `AgentEvent` — otherwise
+   exactly the events most worth investigating become forensically empty.
+
 **Latency budget (hook path is synchronous — every tool call in every session waits on it):**
 
 | Tier | Budget | Behaviour on breach |
