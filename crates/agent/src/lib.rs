@@ -4,5 +4,7 @@
 //! `llm-firewall-agent` — agent-loop inspection. No I/O lives here.
 
 pub mod event;
+pub mod facet;
 
 pub use event::{AgentEvent, AgentId, EventKind, Provenance, SessionId, ToolDecl, Trust};
+pub use facet::{facets, Facet};
