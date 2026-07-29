@@ -5,6 +5,8 @@
 
 pub mod event;
 pub mod facet;
+pub mod fingerprint;
 
 pub use event::{AgentEvent, AgentId, EventKind, Provenance, SessionId, ToolDecl, Trust};
 pub use facet::{facets, Facet};
+pub use fingerprint::{fingerprints, overlap};
