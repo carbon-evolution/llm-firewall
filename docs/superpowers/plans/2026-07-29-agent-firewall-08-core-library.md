@@ -1977,6 +1977,24 @@ agent_policies:
     action: deny
     message: "Blocked: subagent requested tools beyond its parent's grant"
 
+  # Secrets or PII heading out over the network.
+  - name: deny-secret-egress
+    when: { detector: secret, facet: tool_args, min_action_class: network }
+    action: deny
+    message: "Blocked: secret in the arguments of a network call"
+
+  # --- asks below this line ---
+  # Ordering is precedence: first match wins, so every `deny` must appear above
+  # every `ask`. Otherwise a weaker verdict pre-empts a stronger one on an
+  # overlapping condition — `ask-sensitive-path-egress` was originally written
+  # above `deny-secret-egress`, which downgraded a detected AWS key leaving over
+  # the network from a hard block to a prompt the user could click through.
+
+  - name: ask-pii-egress
+    when: { detector: pii, facet: tool_args, min_action_class: network }
+    action: ask
+    message: "This call sends personal data to an external host. Allow?"
+
   # A credential-shaped path plus an outbound send. Neither is alarming alone —
   # repos are full of `.env.example` and `credentials.md`, and sending data is
   # routine — but reading one and then posting is the exfiltration shape.
@@ -1984,17 +2002,6 @@ agent_policies:
     when: { touches_sensitive_path: true, min_action_class: network }
     action: ask
     message: "This call sends data and references a credential path. Allow?"
-
-  # Secrets or PII heading out over the network.
-  - name: deny-secret-egress
-    when: { detector: secret, facet: tool_args, min_action_class: network }
-    action: deny
-    message: "Blocked: secret in the arguments of a network call"
-
-  - name: ask-pii-egress
-    when: { detector: pii, facet: tool_args, min_action_class: network }
-    action: ask
-    message: "This call sends personal data to an external host. Allow?"
 
   # Injected instructions arriving in a tool result or a tool description.
   - name: ask-injection-in-result
