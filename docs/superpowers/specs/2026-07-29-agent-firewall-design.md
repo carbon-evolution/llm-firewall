@@ -267,11 +267,22 @@ branch emits a global minimum that is not required to be a winnowed minimum of t
 matches and never fire.
 
 **Resolution:** fingerprinting alone is insufficient for short arguments. The taint tracker
-additionally extracts **distinctive literals** from untrusted content — URLs, hostnames, absolute
-paths, and credential-file paths — and stores them per session. A tool argument that contains one of
-those literals is tainted regardless of its length. Fingerprints catch reformatted prose; literals
-catch the short, high-signal strings that prose fingerprinting structurally cannot. Neither
-subsumes the other.
+additionally extracts **distinctive literals** from untrusted content — scheme-qualified URLs and
+absolute or `~`-relative paths — and stores them per session. A tool argument that contains one of
+those literals is tainted regardless of its length, with no `MIN_MATCHES` threshold. Fingerprints
+catch reformatted prose; literals catch the short, high-signal strings that prose fingerprinting
+structurally cannot. Neither subsumes the other.
+
+**Bare hostnames are deliberately excluded**, decided during Task 4 after measurement. A hostname is
+indistinguishable by shape from an ordinary filename, and extracting them pulled in `package.json`,
+`docker-compose.yml`, `CONTRIBUTING.md`, `requirements.txt`, and `self.assertEqual` from realistic
+content. Since a literal hit needs no threshold, reading any fetched README would then have made a
+later `npm install` mentioning `package.json` register as tainted — constant prompting on nothing,
+which is how a security tool gets switched off. A denylist of common filenames would be endless.
+
+The coverage this gives up is small and is picked up elsewhere: a bare host reached without a scheme
+is caught by the egress allowlist (§6.2), which prompts on any host not explicitly listed. This is
+the layering working as intended — the taint tracker does not have to catch everything alone.
 
 ### Bounds and honesty
 
