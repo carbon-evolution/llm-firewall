@@ -201,59 +201,9 @@ The agent layer watches the **tool boundary**. Every event an agent generates is
 schema, projected into text the existing detectors already understand, combined with provenance and
 action signals, and put to a policy that returns `Allow`, `Ask`, or `Deny`.
 
-```mermaid
-flowchart TB
-    subgraph collectors["COLLECTORS (phase 09+, not yet built)"]
-        H["Claude Code hooks<br/><i>PreToolUse / PostToolUse</i>"]
-        A["API proxy<br/><i>tool_use / tool_result blocks</i>"]
-        M["MCP proxy<br/><i>manifests, args, results</i>"]
-    end
-
-    H --> EV
-    A --> EV
-    M --> EV
-
-    EV["<b>AgentEvent</b><br/>one schema for all collectors<br/><i>ToolCall · ToolResult · SubagentSpawn<br/>SubagentReport · ManifestSeen · lifecycle</i>"]
-
-    EV --> FAC
-
-    FAC["<b>Facet projection</b><br/>event → inspectable text spans"]
-
-    FAC -->|"tool ARGS<br/>Direction::Output"| DET
-    FAC -->|"tool RESULTS, instructions,<br/>tool descriptions<br/>Direction::Input"| DET
-
-    DET["<b>core detectors</b> (reused, no new detector code)<br/>injection · secret · pii · output"]
-
-    DET --> DEDUP
-    DEDUP["<b>Dedupe + risk score</b><br/>collapse repeated signals, then noisy-OR"]
-
-    EV --> SIG
-
-    subgraph SIG["AGENT SIGNALS"]
-        direction LR
-        T["<b>Taint</b><br/>fingerprints + literals<br/><i>did this come from<br/>untrusted content?</i>"]
-        C["<b>Action class</b><br/>ReadOnly → Destructive<br/><i>how much harm<br/>can this do?</i>"]
-        E["<b>Egress hosts</b><br/>URLs, scp, IPv6<br/><i>where is it<br/>going?</i>"]
-        AU["<b>Authority</b><br/>parent ⊇ child tools<br/><i>is the subagent<br/>overreaching?</i>"]
-    end
-
-    DEDUP --> POL
-    SIG --> POL
-
-    POL["<b>Policy engine</b><br/>flat, first-match YAML · denies before asks"]
-
-    POL --> V1["<b>Allow</b><br/>proceed"]
-    POL --> V2["<b>Ask</b><br/>pause for the human"]
-    POL --> V3["<b>Deny</b><br/>block before it runs"]
-
-    style EV fill:#1f6feb,stroke:#0d419d,color:#fff
-    style DET fill:#238636,stroke:#1a6028,color:#fff
-    style POL fill:#8250df,stroke:#5a32a3,color:#fff
-    style V1 fill:#238636,stroke:#1a6028,color:#fff
-    style V2 fill:#9e6a03,stroke:#7a5202,color:#fff
-    style V3 fill:#da3633,stroke:#a52725,color:#fff
-    style collectors stroke-dasharray: 5 5
-```
+<p align="center">
+  <img src="docs/img/agent-dataflow.png" alt="Agent firewall data flow: collectors (Claude Code hooks, API proxy, MCP proxy — phase 09+, not yet built) emit one AgentEvent schema; facet projection sends tool arguments as Direction::Output and tool results as Direction::Input into the reused core detectors (injection, secret, pii, output), then dedupe and noisy-OR risk scoring; in parallel the agent signals — taint, action class, egress hosts, subagent authority — feed the policy engine, which returns Allow, Ask, or Deny" width="900">
+</p>
 
 ### The four threat classes
 
