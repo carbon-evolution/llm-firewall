@@ -24,9 +24,13 @@ pub fn decide(tool: &str, args: &serde_json::Value, cwd: Option<&str>) -> Proven
         .strip_prefix("mcp__")
         .and_then(|r| r.split("__").next())
     {
-        return Provenance::McpServer {
-            name: server.to_string(),
-        };
+        if !server.is_empty() {
+            return Provenance::McpServer {
+                name: server.to_string(),
+            };
+        }
+        // A bare `mcp__` carries no server identity; fall through to the
+        // conservative default rather than inventing an empty-named server.
     }
 
     if NETWORK_TOOLS.contains(&tool) {
@@ -42,9 +46,20 @@ pub fn decide(tool: &str, args: &serde_json::Value, cwd: Option<&str>) -> Proven
         let path = args
             .get("file_path")
             .or_else(|| args.get("path"))
+            .or_else(|| args.get("notebook_path"))
             .and_then(|v| v.as_str());
         if let (Some(p), Some(root)) = (path, cwd) {
-            return if is_inside(p, root) {
+            // Hooks may pass a relative path. `Path::starts_with` compares component
+            // sequences, so a relative path never starts with an absolute root and
+            // an ordinary in-project file would be mislabelled LocalSystem. Resolve
+            // it against cwd first — lexically, no filesystem access, since this runs
+            // on the synchronous hook path.
+            let joined = if Path::new(p).is_absolute() {
+                PathBuf::from(p)
+            } else {
+                Path::new(root).join(p)
+            };
+            return if is_inside(&joined.to_string_lossy(), root) {
                 Provenance::LocalProject
             } else {
                 Provenance::LocalSystem
@@ -211,15 +226,36 @@ mod tests {
     }
 
     #[test]
-    fn relative_path_against_absolute_root_does_not_match() {
-        // Documented hazard: `Path::starts_with` compares component sequences, and a
-        // relative path never starts with an absolute one. A hook that hands a
-        // relative path for an ordinary in-project file therefore falls through to
-        // LocalSystem, not LocalProject. See the report for the implication.
+    fn relative_path_against_absolute_root_does_not_match_is_inside_directly() {
+        // `is_inside` itself is purely lexical: `Path::starts_with` compares
+        // component sequences, and a relative path never starts with an absolute
+        // one. This is exactly why `decide` joins a relative path onto `cwd` before
+        // calling `is_inside` — see `a_relative_path_in_project_is_local_project`.
         assert!(!is_inside("src/main.rs", "/proj"));
+    }
+
+    #[test]
+    fn a_relative_path_in_project_is_local_project() {
+        // Hooks may hand a relative `file_path`. Previously this fell through to
+        // LocalSystem, mislabelling an ordinary in-project read in the audit log
+        // (the phase-10 tuning corpus / phase-12 benchmark). `decide` now resolves
+        // the relative path against `cwd` before the containment check.
         let p = decide(
             "Read",
             &args(serde_json::json!({"file_path":"src/main.rs"})),
+            Some("/proj"),
+        );
+        assert_eq!(p, Provenance::LocalProject);
+    }
+
+    #[test]
+    fn a_relative_traversal_path_is_still_outside_the_project() {
+        // `../etc/passwd` joined onto `/proj` resolves to `/etc/passwd`, which is
+        // not inside `/proj`. Joining onto cwd must not accidentally legitimize a
+        // traversal.
+        let p = decide(
+            "Read",
+            &args(serde_json::json!({"file_path":"../etc/passwd"})),
             Some("/proj"),
         );
         assert_eq!(p, Provenance::LocalSystem);
@@ -257,10 +293,11 @@ mod tests {
 
     #[test]
     fn mcp_name_parsing_edge_cases() {
-        // Nothing after `mcp__`: the tool name check requires at least an empty
-        // remainder to split, which yields an empty server name.
+        // Nothing after `mcp__`: an empty server name is meaningless in an audit
+        // line and would group unrelated servers together in later per-server
+        // logic, so this falls back to the conservative default instead.
         let p = decide("mcp__", &args(serde_json::json!({})), Some("/p"));
-        assert_eq!(p, Provenance::McpServer { name: "".into() });
+        assert_eq!(p, Provenance::LocalSystem);
 
         // Only one `__`-delimited part after the prefix: whole remainder is taken
         // as the server name (no tool segment to split off).
@@ -302,5 +339,17 @@ mod tests {
             None,
         );
         assert_eq!(p, Provenance::LocalSystem);
+    }
+
+    // --- Hazard verification: notebook_path argument key ---
+
+    #[test]
+    fn notebook_read_uses_the_notebook_path_key() {
+        let p = decide(
+            "NotebookRead",
+            &args(serde_json::json!({"notebook_path":"notebooks/analysis.ipynb"})),
+            Some("/proj"),
+        );
+        assert_eq!(p, Provenance::LocalProject);
     }
 }
