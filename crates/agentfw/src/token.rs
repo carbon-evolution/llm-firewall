@@ -56,12 +56,41 @@ pub fn load_or_create(path: &Path) -> anyhow::Result<String> {
         }
     }
     let t = generate();
-    std::fs::write(path, &t)?;
+    write_private(path, &t)?;
+    // Belt and suspenders: `.mode()` in `write_private` only applies when the file
+    // is actually created. An existing-but-empty file (falls through the branch
+    // above) is opened and truncated in place, so its original permissions stand
+    // unless we tighten them here too.
     restrict(path)?;
     Ok(t)
 }
 
-/// Owner-only permissions. The token grants full access to session data.
+/// Create the file with owner-only permissions from the outset. Writing first and
+/// chmod'ing after leaves a window — however brief — where the token is readable at
+/// the process umask, and this token grants full access to session data.
+#[cfg(unix)]
+fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, contents: &str) -> anyhow::Result<()> {
+    std::fs::write(path, contents)?;
+    Ok(())
+}
+
+/// Owner-only permissions. The token grants full access to session data. Public
+/// because `audit.rs` reuses it for the audit log, which holds prompts and paths.
 #[cfg(unix)]
 pub fn restrict(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::PermissionsExt;
