@@ -493,7 +493,21 @@ Stated plainly, for the README:
 
 ---
 
-## 13. Open Questions for Spec Review
+## 13. Follow-ups Outside This Phase
+
+**`core::policy` fails open on a typo'd condition key.** Found while hardening the agent policy
+engine in Task 8. `core`'s `Condition`, `Rule`, and `PolicySet` have no `deny_unknown_fields`, so a
+misspelled key (`detecter` for `detector`) parses silently and leaves `when: {}` — which matches
+**every** event. A fat-fingered narrow rule becomes a catch-all, and if its action is `allow` it
+disables every rule beneath it. There is no diagnostic.
+
+`crates/agent` now sets `deny_unknown_fields` on all three of its policy types, so the agent side is
+safe. `core` was deliberately left alone: it is a released, published crate, and tightening parse
+strictness would reject configs that currently load, so it needs its own decision and a version bump.
+Worth doing — a security policy that fails open on a typo is a bad default — but as its own change
+with a changelog entry, not smuggled in here.
+
+## 14. Open Questions for Spec Review
 
 1. **Approval UX in non-interactive sessions** (cron, CI, background agents): default to `deny`, or
    to `allow`-with-loud-audit? Current default is `deny`; that is the safe choice but will break
