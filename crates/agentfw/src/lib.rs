@@ -5,7 +5,9 @@
 //! agent layer; all verdict logic lives in `llm-firewall-agent`.
 
 pub mod config;
+pub mod decision;
 pub mod hook;
+pub mod map;
 pub mod provenance;
 pub mod token;
 
