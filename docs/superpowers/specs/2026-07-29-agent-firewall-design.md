@@ -121,13 +121,30 @@ event sequence and asserting the verdicts, with no daemon, no sockets, and no mo
 
 One schema, produced by all three collectors. This is the contract the whole system is built on.
 
+> **Amended 2026-07-29 during phase 08 implementation** (commits `1238ae1`, `a8de515`), after code
+> review of the first task. Three changes, all recorded here because this schema is frozen once
+> collectors ship:
+>
+> 1. **`at: SystemTime` → `at_ms: u64`** (epoch milliseconds). Keeps the crate free of clock I/O and
+>    makes serde round-trips trivial. The collector supplies the value.
+> 2. **Added `EventKind::Unknown`, a `#[serde(other)]` catch-all.** Without it an unrecognized `kind`
+>    is a hard parse error. In phase 09 this schema crosses a process boundary between a hook binary
+>    and a separately-installed daemon, which can be at different versions; a newer collector talking
+>    to an older daemon would fail *every* event, and a hook that cannot respond breaks the user's
+>    agent loop. `Unknown` degrades an unrecognized event to "no facets, no signals, no opinion"
+>    instead. This is additive today and impossible to add compatibly later.
+> 3. **`Provenance`'s serde tag renamed `"source"` → `"origin"`.** It was colliding visually with
+>    `EventKind::ToolResult`'s field, also named `source`, producing `"source":{"source":"network"}`
+>    on the wire. Phase 09 hook authors hand-write this JSON, so the doubled key was a papercut with
+>    a permanently-closing fix window.
+
 ```rust
 pub struct AgentEvent {
     pub session: SessionId,        // stable per Claude Code session / API conversation
     pub agent: AgentId,            // "main" or the subagent name, e.g. "osint-agent"
     pub parent: Option<AgentId>,   // who spawned this agent — authority chain
     pub seq: u64,                  // monotonic within session
-    pub at: SystemTime,
+    pub at_ms: u64,                // epoch millis; this crate has no clock
     pub kind: EventKind,
 }
 
@@ -138,6 +155,7 @@ pub enum EventKind {
     SubagentReport { name: String, content: String },
     ManifestSeen  { server: String, tools: Vec<ToolDecl> },  // MCP handshake
     SessionStart | SessionEnd,
+    Unknown,              // #[serde(other)] — newer collector, older daemon. Inert by design.
 }
 
 pub enum Provenance {

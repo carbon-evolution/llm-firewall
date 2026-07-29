@@ -18,7 +18,15 @@
 
 1. **`AgentEvent.at: SystemTime` → `at_ms: u64`** (epoch milliseconds). Keeps the crate free of clock I/O and makes serde round-trips trivial. The daemon in phase 09 supplies the value.
 2. **`AgentEvent::contexts()` → `facets()` returning `Vec<(Facet, String)>`** rather than borrowed `Context<'_>`. String leaves extracted from a `serde_json::Value` tree are built by walking it, so returning owned strings avoids fighting the borrow checker for no benefit. The caller constructs `Context::input(&s)` / `Context::output(&s)` at the point of use — same reuse, less lifetime plumbing.
-3. **MCP manifest pinning is NOT in this phase** — per the spec's resolved open question, it lands in phase 11. `EventKind::ManifestSeen` is defined here (so the schema is stable) and its tool descriptions are inspected for injection, but hashing and drift detection are out of scope.
+3. **Added `EventKind::Unknown`, a `#[serde(other)]` catch-all** (applied during Task 1, commit
+   `a8de515`, after code review). An unrecognized `kind` was a hard parse error; across the phase-09
+   process boundary a version-skewed collector and daemon would then fail every event. `Unknown` is
+   inert — no facets, no signals, no verdict change. Additive now, impossible to add compatibly once
+   collectors ship. **Every `match` on `EventKind` must handle it.**
+4. **`Provenance`'s serde tag renamed `"source"` → `"origin"`** (same commit), so `ToolResult` emits
+   `"source":{"origin":"network",...}` instead of a doubled `source` key that phase-09 hook authors
+   would have to hand-write.
+5. **MCP manifest pinning is NOT in this phase** — per the spec's resolved open question, it lands in phase 11. `EventKind::ManifestSeen` is defined here (so the schema is stable) and its tool descriptions are inspected for injection, but hashing and drift detection are out of scope.
 
 ---
 
@@ -394,9 +402,11 @@ mod tests {
     }
 
     #[test]
-    fn lifecycle_events_project_nothing() {
+    fn lifecycle_and_unknown_events_project_nothing() {
         assert!(facets(&ev(EventKind::SessionStart)).is_empty());
         assert!(facets(&ev(EventKind::SessionEnd)).is_empty());
+        // The forward-compatibility fallback must stay inert.
+        assert!(facets(&ev(EventKind::Unknown)).is_empty());
     }
 }
 ```
@@ -482,7 +492,10 @@ pub fn facets(ev: &AgentEvent) -> Vec<(Facet, String)> {
                 )
             })
             .collect(),
-        EventKind::SessionStart | EventKind::SessionEnd => Vec::new(),
+        // Lifecycle events carry no text. `Unknown` is the forward-compatibility
+        // fallback (a newer collector talking to an older daemon) and is inert by
+        // design: no facets, so no findings, so no verdict change.
+        EventKind::SessionStart | EventKind::SessionEnd | EventKind::Unknown => Vec::new(),
     }
 }
 ```
