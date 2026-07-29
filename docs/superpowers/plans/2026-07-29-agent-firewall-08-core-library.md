@@ -1769,6 +1769,21 @@ git commit -m "feat(agent): subagent authority containment"
 
 ### Task 8: Agent policy and verdicts
 
+> **Two findings from the Task 5 review that this task must handle.**
+>
+> 1. **MCP tools are the primary egress surface and are currently invisible.**
+>    `mcp__slack__post_message` classifies `SideEffecting` — the same class as `TodoWrite`. In a real
+>    agent deployment, MCP is how data most often leaves. The classifier deliberately does not guess
+>    at this (a name heuristic would misfire on `mcp__db__post_process`), so policy must: either map
+>    known send-verbs (`post`, `send`, `create`, `comment`, `upload`, `publish`, `message`, `email`,
+>    `webhook`) to a higher class via config, or carry an explicit per-server class map. Whichever is
+>    chosen, `egress_allowlist` still applies, because `egress::hosts()` sees MCP HTTP arguments.
+> 2. **`touches_sensitive_path` is a separate signal, not a severity bump.** Reading a file named
+>    `credentials.md` or `.env.example` is ordinary — repos are full of them, and bumping severity for
+>    it put ordinary `Read`/`Grep` calls *above* egress on the danger scale. So the classifier reports
+>    it as a boolean alongside `ActionClass`. Policy should use it in *combination* — sensitive path
+>    **plus** taint, or sensitive path **plus** a network send — never on its own.
+
 **Files:**
 - Create: `crates/agent/src/policy.rs`
 - Create: `crates/agent/policies/agent-default.yaml`
@@ -1962,6 +1977,14 @@ agent_policies:
     action: deny
     message: "Blocked: subagent requested tools beyond its parent's grant"
 
+  # A credential-shaped path plus an outbound send. Neither is alarming alone —
+  # repos are full of `.env.example` and `credentials.md`, and sending data is
+  # routine — but reading one and then posting is the exfiltration shape.
+  - name: ask-sensitive-path-egress
+    when: { touches_sensitive_path: true, min_action_class: network }
+    action: ask
+    message: "This call sends data and references a credential path. Allow?"
+
   # Secrets or PII heading out over the network.
   - name: deny-secret-egress
     when: { detector: secret, facet: tool_args, min_action_class: network }
@@ -2066,6 +2089,8 @@ pub struct Signals {
     pub risk_score: u8,
     pub egress_hosts: Vec<String>,
     pub subagent_escalation: bool,
+    /// The call touches a credential-shaped path. Never dangerous alone.
+    pub touches_sensitive_path: bool,
 }
 
 /// All present sub-conditions are ANDed. Absent fields are ignored.
@@ -2091,6 +2116,11 @@ pub struct AgentCondition {
     pub egress_not_allowlisted: Option<bool>,
     #[serde(default)]
     pub subagent_escalation: Option<bool>,
+    /// True when the call touches a path that commonly holds credentials. Reported
+    /// separately from `action_class` because reading such a file is ordinary — use
+    /// it only in combination with taint or egress, never alone.
+    #[serde(default)]
+    pub touches_sensitive_path: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2200,6 +2230,11 @@ impl AgentPolicySet {
         }
         if let Some(want) = c.subagent_escalation {
             if s.subagent_escalation != want {
+                return false;
+            }
+        }
+        if let Some(want) = c.touches_sensitive_path {
+            if s.touches_sensitive_path != want {
                 return false;
             }
         }
