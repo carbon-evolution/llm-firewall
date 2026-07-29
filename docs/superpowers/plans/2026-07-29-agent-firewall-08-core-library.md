@@ -317,7 +317,9 @@ git commit -m "feat(agent): crate scaffold and AgentEvent wire schema"
 - Modify: `crates/agent/src/lib.rs`
 - Test: inline in `crates/agent/src/facet.rs`
 
-This is the task that buys three of the four threat classes for free: tool *arguments* are inspected as `Direction::Output` (data leaving toward a tool → secret/PII detectors) and tool *results* as `Direction::Input` (data entering the context → injection detector).
+This is the task that buys three of the four threat classes without new detector code: tool *arguments* get run through the `secret` / `pii` / `output` detectors, and tool *results* through `injection`.
+
+**Be precise about what `Direction` does here, because an earlier revision of this plan got it wrong.** `Direction` is a *label* and a *policy key*, not a detection switch. `SecretDetector`, `PiiDetector`, and `InjectionDetector` all score `ctx.text` alone and then stamp `ctx.direction` onto the resulting `Finding` as metadata — none of them branch on it. Pointing those detectors at argument and result text is what does the work; the direction mapping earns its place only because `core::policy::Condition` can gate rules on it and because it is the honest label in the audit log. The one detector that *does* gate on direction is `OutputDetector`, which returns empty unless `direction == Output` — hence it fires on `ToolArgs` and is inert on `ToolResult`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2054,6 +2056,58 @@ mod tests {
     }
 
     #[test]
+    fn repeated_identical_signals_do_not_compound_into_a_block() {
+        // Six benign path-like leaves each trip `secret.generic`. Before dedupe this
+        // scored 62 under noisy-OR, and a 30-leaf payload scored 99 — above the
+        // block threshold, from nothing real. Dedupe must keep this flat.
+        let mut f = fw();
+        let mut edits = Vec::new();
+        for i in 0..30 {
+            edits.push(serde_json::json!({
+                "path": format!("/Users/a/projects/monorepo/packages/service{i}/src/handlers/index"),
+            }));
+        }
+        let d = f.inspect(&ev(
+            1,
+            EventKind::ToolCall {
+                tool: "MultiEdit".into(),
+                args: serde_json::json!({ "edits": edits }),
+            },
+        ));
+        assert!(
+            d.risk_score < 60,
+            "repeated identical signals compounded: score={} rule={:?}",
+            d.risk_score,
+            d.rule
+        );
+        assert_eq!(d.verdict, Verdict::Allow);
+    }
+
+    #[test]
+    fn a_common_benign_build_command_is_not_blocked() {
+        // `rm -rf node_modules` trips `output.shell.rm_rf` at Critical. It is also
+        // one of the most common commands in JS work. If policy blocks it outright
+        // the tool is unusable, so this pins the intended behavior: the destructive
+        // classifier and policy must let an UNTAINTED destructive command through
+        // to a prompt rather than a hard deny.
+        let mut f = fw();
+        let d = f.inspect(&ev(
+            1,
+            EventKind::ToolCall {
+                tool: "Bash".into(),
+                args: serde_json::json!({ "command": "rm -rf node_modules && npm ci" }),
+            },
+        ));
+        assert_ne!(
+            d.verdict,
+            Verdict::Deny,
+            "benign build command hard-denied: rule={:?} score={}",
+            d.rule,
+            d.risk_score
+        );
+    }
+
+    #[test]
     fn realistic_deep_paths_and_urls_do_not_trip_the_firewall() {
         // `secret.generic` matches runs of 24+ chars from [A-Za-z0-9+/_-], which
         // includes `/` and `-` — so deep dotless paths and URL paths look like
@@ -2231,7 +2285,7 @@ Insert above the test module in `crates/agent/src/engine.rs`:
 ```rust
 use llm_firewall_core::{
     score_findings, Context, Detector, Finding, InjectionDetector, OutputDetector, PiiDetector,
-    SecretDetector,
+    SecretDetector, Severity,
 };
 
 use crate::action::classify;
@@ -2270,8 +2324,11 @@ impl AgentFirewall {
     pub fn new(policy: AgentPolicySet, taint_cap: usize) -> Self {
         Self {
             policy,
-            // NOTE: `InjectionDetector` implements `Default`; `SecretDetector` and
-            // `PiiDetector` expose `new()` only. Verified against core 0.2.0.
+            // NOTE: all four detectors derive `Default` AND expose `new()`
+            // (`#[derive(Default)]` on the unit structs in core 0.2.0). `new()` is
+            // used here for uniformity. An earlier revision of this plan claimed
+            // Secret/Pii were `new()`-only — that was wrong, from a grep for
+            // `impl Default` that missed the derive.
             //
             // `OutputDetector` is included deliberately: it self-gates on
             // `direction == Output`, so it fires ONLY on the `ToolArgs` facet and is
@@ -2334,7 +2391,18 @@ impl AgentFirewall {
                 }
             }
         }
-        let flat: Vec<Finding> = findings.iter().map(|(_, f)| f.clone()).collect();
+        // Dedupe before scoring. `score_findings` is noisy-OR
+        // (`1 - Π(1 - weight·confidence)`), so N copies of the SAME signal compound
+        // into a high score from nothing new. This is not hypothetical: a detector
+        // like `secret.generic` uses `find_iter`, so one MultiEdit-shaped payload of
+        // six benign 24-char path segments produced six findings and scored 62
+        // against a policy that blocks at 85; thirty produced 99.
+        //
+        // Collapsing on `(detector, severity)` keeps one representative per distinct
+        // signal, so repetition raises confidence in a finding without inflating the
+        // score. Genuinely different signals still compound, which is what noisy-OR
+        // is for.
+        let flat: Vec<Finding> = dedupe_for_scoring(&findings);
         let risk_score = score_findings(&flat).score;
 
         // 2. Event-kind-specific signals.
@@ -2399,6 +2467,25 @@ impl AgentFirewall {
             risk_score,
             egress_hosts: signals.egress_hosts,
         }
+    }
+
+    /// Keep one finding per `(detector, severity)` pair, highest confidence first.
+    /// See the rationale at the call site: without this, repeated identical signals
+    /// compound under noisy-OR scoring and benign payloads cross the block threshold.
+    fn dedupe_for_scoring(findings: &[(Facet, Finding)]) -> Vec<Finding> {
+        let mut best: std::collections::BTreeMap<(String, Severity), Finding> =
+            std::collections::BTreeMap::new();
+        for (_, f) in findings {
+            let key = (f.detector.clone(), f.severity);
+            best.entry(key)
+                .and_modify(|kept| {
+                    if f.confidence > kept.confidence {
+                        *kept = f.clone();
+                    }
+                })
+                .or_insert_with(|| f.clone());
+        }
+        best.into_values().collect()
     }
 
     fn allow() -> Outcome {
