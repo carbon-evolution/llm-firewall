@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/proxy", "crates/bench"]
+members = ["crates/core", "crates/proxy", "crates/bench", "crates/agent"]
 
 [workspace.package]
 edition = "2021"
@@ -10,3 +10,4 @@ repository = "https://github.com/carbon-evolution/llm-firewall"
 [workspace.dependencies]
 regex = "1"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,0 +1,17 @@
+[package]
+name = "llm-firewall-agent"
+version = "0.2.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent-loop inspection for the LLM Firewall: tool-call gating, taint tracking, subagent authority."
+
+[dependencies]
+llm-firewall-core = { path = "../core", version = "0.2.0" }
+regex.workspace = true
+serde = { workspace = true }
+serde_json.workspace = true
+serde_yaml = "0.9"
+
+[dev-dependencies]
+serde_json = "1"
