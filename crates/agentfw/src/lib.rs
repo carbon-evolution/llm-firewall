@@ -4,6 +4,7 @@
 //! `agentfw` — the agent firewall daemon. The only crate performing I/O for the
 //! agent layer; all verdict logic lives in `llm-firewall-agent`.
 
+pub mod audit;
 pub mod config;
 pub mod decision;
 pub mod hook;
