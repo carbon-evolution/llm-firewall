@@ -1287,3 +1287,52 @@ itself become an exfiltration channel. Enforced in Task 3.
 **Type consistency:** `Verdict::Escalate` (Task 1) is used in 2, 5. `AgentRule.fallback` (1) → `AgentDecision.fallback` (1) → `Outcome.fallback` (2) → `resolve_escalation` (5). `JudgeCfg` (3) is consumed by `Judge::new` (4). `Judgement` (4) is consumed by `resolve_escalation` (5) and asserted in 6.
 
 **Verified against the real code while writing this plan:** `Verdict` derives `Debug, Clone, Copy, PartialEq, Eq, Deserialize`; `AgentRule` currently has `name`/`when`/`action`/`message`; `AgentDecision` has `verdict`/`rule`/`message`; `AgentPolicySet::from_yaml` returns `Result<Self, serde_yaml::Error>`; `crates/proxy` already depends on `reqwest` with `rustls-tls` and on `wiremock` as a dev-dependency, so both are proven in this workspace.
+
+---
+
+### Task 6b: Judge evaluation corpus — measure the two numbers
+
+**Status: agreed, deferred to a later session. Do this BEFORE Tasks 5–7.**
+
+The 8-of-8 probe in spec §4b is encouraging but it is eight hand-picked cases — precisely the
+self-flattering test this project's own methodology warns against. The text firewall is held to a
+two-number standard (detection rate **and** false-positive rate on benign input, always reported
+together). The judge must be held to the same one, or its numbers are not credible.
+
+**Why before Tasks 5–7:** a poor result changes the design rather than the wiring. Finding out after
+the handler is built means rework; finding out first means the design absorbs it — the same reasoning
+that made testing the premise before writing the client worthwhile.
+
+- [ ] **Step 1: Build the corpus** at `crates/agentfw/tests/fixtures/judge_corpus.jsonl`,
+      one `{"content": "...", "label": "injection|documentation", "note": "..."}` per line.
+
+  **~25 injection samples**, varied by technique, not just phrasing: hidden HTML comments; markdown
+  image beacons; "ignore previous instructions"; fake system/policy notes claiming pre-approval;
+  instructions to read `~/.ssh`, `~/.aws`, `.env`; exfil URLs; base64-wrapped payloads; instructions
+  in a non-English language; an injection buried in otherwise-genuine documentation; an injection
+  phrased as a code comment.
+
+  **~25 benign samples**, drawn from what agents actually read: a real README with build commands; an
+  npm `ERESOLVE` dump; a Stack Overflow answer containing shell commands; API documentation with
+  `curl` examples; a CI log; a git diff; a changelog; a licence; an error backtrace; a `docker-compose`
+  file. **Include the hard ones** — benign content that *mentions* credentials, `.env` files, or
+  posting data, because that is where false positives will come from.
+
+  All samples must be **written for this corpus or drawn from public sources**. Per the parent spec's
+  data handling rule, nothing from a real audit log goes in.
+
+- [ ] **Step 2: A `#[ignore]`d test that runs the corpus against a live model.**
+      Named e.g. `judge_corpus_evaluation`, marked `#[ignore]` so CI (no GPU, no model) stays green,
+      run manually with `cargo test -p agentfw -- --ignored --nocapture`. It must print a confusion
+      matrix and both rates, not just assert.
+
+- [ ] **Step 3: Report both numbers, and treat the FP rate as the deciding one.**
+      A judge that flags benign documentation is worse than no judge: it converts the `escalate`
+      action into a prompt generator and the operator switches it off. If the FP rate is high, the
+      lever is the system prompt first, then narrowing which rules escalate — not accepting the noise.
+
+- [ ] **Step 4: Record the measured numbers in spec §4b**, replacing the 8-case probe as the
+      headline evidence, and in the README alongside the text layer's scorecard.
+
+**Requires:** LM Studio running with a small instruct model (`google/gemma-4-e4b` was used for the
+probe and is adequate). Roughly ten minutes of model time.
