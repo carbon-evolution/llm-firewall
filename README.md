@@ -743,24 +743,27 @@ if you point the judge at whatever local model you already run?"* — not an aca
 |---|---|---|---|---|---|
 | `gemma-4-e4b` | ~4B, **instruct** (non-reasoning) | ✅ **yes** | 100% (25/25) | **4.0%** (1/25) | **386 ms / 416 ms / 625 ms** |
 | `qwen3.5-9b` | 9B, **reasoning** | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 37.6 s / 38.8 s / 81.7 s\* |
-| `qwen3.5-9b-uncensored-...@q8_0` | 9B, **uncensored** fine-tune, **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 55.8 s / 61.0 s / 130.0 s\* |
-| `gemma-4-12b-qat` | 12B, **QAT** (quantization-aware training) | — could not load (11.75 GB, memory guardrail) | — | — | — |
+| `qwen3.5-9b-uncensored-...@q8_0` | 9B, **uncensored** fine-tune, **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* (2 `Unavailable`) | 55.8 s / 61.0 s / 130.0 s\* |
+| `claude-fable@q8_0` (Qwythos / Claude-Mythos-5, **1M MTP**) | 9B, **MTP** (multi-token prediction), **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 25.4 s / 28.0 s / 86.9 s\* |
+| `gemma-4-12b-qat` | 12B, **QAT** (quantization-aware training), instruct | — could not load (11.75 GB, memory guardrail) | — | — | — |
 
 \* Reasoning models produce **nothing** under the real `max_tokens: 4` budget (they spend it all
 thinking). The accuracy/latency shown is only reachable by giving them `max_tokens: 1024` to finish —
 a configuration the daemon never runs. Even then, the uncensored 8-bit build left **2 benign samples
-`Unavailable`** because it couldn't finish reasoning within 1024 tokens.
+`Unavailable`** because it couldn't finish reasoning within 1024 tokens (the MTP build finished all 50).
 
-**What the numbers say.** The two 9B reasoning models are *marginally* more accurate than the 4B — each
-clears the one security-policy document the 4B false-flags (0% vs. 4% FP). That edge is worthless here:
+**What the numbers say.** All three 9B reasoning models are *marginally* more accurate than the 4B —
+each clears the one security-policy document the 4B false-flags (0% vs. 4% FP), and the MTP build was
+flawless (100% / 0% / zero `Unavailable`). That edge is worthless here:
 
-- **They cannot run under the contract at all.** At `max_tokens: 4` both emit an empty answer on every
-  sample → 100% `Unavailable`. `enable_thinking:false` and the `/no_think` soft switch did **not**
-  disable reasoning in these builds, and the "uncensored" fine-tune reasons just as unconditionally as
-  the stock one — so being uncensored changes nothing about fitness for this tier.
-- **Given room to think they are 90–150× over budget** (mean 38.8 s and 61.0 s vs. the 4B's 0.42 s),
-  far past Claude Code's 5 s hook timeout — the 8-bit quant made the uncensored model *slower*, not
-  faster.
+- **None of them can run under the contract at all.** At `max_tokens: 4` every one emits an empty answer
+  on every sample → 100% `Unavailable`. `enable_thinking:false` and the `/no_think` soft switch did
+  **not** disable reasoning in any of these builds, and neither the "uncensored" nor the MTP fine-tune
+  reasons any less unconditionally — so fine-tune and feature flags change nothing about fitness here.
+- **Given room to think they are 60–150× over budget** (mean 28.0–61.0 s vs. the 4B's 0.42 s), far past
+  Claude Code's 5 s hook timeout. MTP was the fastest of the three (mean 28 s) and 8-bit quant the
+  *slowest* (61 s) — but "fastest reasoning 9B" is still two orders of magnitude too slow for a
+  synchronous hook.
 - **The 4B's one false positive is nearly free**, because the judge may only ever *tighten* a verdict:
   the cost is a single extra confirmation prompt, never a bypass.
 
