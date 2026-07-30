@@ -90,6 +90,8 @@ async fn serve() -> anyhow::Result<()> {
         audit: AuditSink::open(&audit_path)?,
         spans: agentfw::spans::SpanCache::new(64, cfg.judge.max_span_bytes),
         judge: agentfw::judge::Judge::new(cfg.judge.clone()),
+        manifests: agentfw::mcp::store::ManifestStore::new(&home.join("manifests")),
+        tools: agentfw::mcp::store::ToolRegistry::with_builtins(),
         config: cfg.clone(),
         token,
     });

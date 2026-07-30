@@ -28,6 +28,7 @@ pub use handlers::{AppState, Shared};
 pub fn app(state: Shared) -> Router {
     Router::new()
         .route("/hook", post(handlers::hook))
+        .route("/mcp", post(handlers::mcp))
         .route("/health", get(handlers::health))
         .with_state(state)
 }
