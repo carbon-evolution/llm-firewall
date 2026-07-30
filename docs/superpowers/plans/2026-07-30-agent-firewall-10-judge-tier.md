@@ -93,6 +93,16 @@ default: allow
     }
 
     #[test]
+    fn a_fallback_of_deny_is_a_parse_error() {
+        // Everything in this project fails OPEN. `fallback: deny` would be the one
+        // path where a MISSING optional dependency produces a hard block — the tool
+        // getting more restrictive the less of it you have installed.
+        let yaml = "agent_policies:\n  - name: r\n    when: { taint: [network] }\n    action: escalate\n    fallback: deny\ndefault: allow\n";
+        let err = AgentPolicySet::from_yaml(yaml).unwrap_err().to_string();
+        assert!(err.contains("deny"), "got: {err}");
+    }
+
+    #[test]
     fn escalate_is_not_a_valid_fallback() {
         // A fallback that escalates again would loop.
         let yaml = "agent_policies:\n  - name: r\n    when: { taint: [network] }\n    action: escalate\n    fallback: escalate\ndefault: allow\n";
@@ -215,6 +225,9 @@ impl TryFrom<RawAgentRule> for AgentRule {
                     r.name
                 ))
             }
+            // The valid case. This arm MUST precede the catch-all below — without it,
+            // every legitimate escalate rule falls through and is rejected.
+            (Verdict::Escalate, Some(Verdict::Allow | Verdict::Ask)) => {}
             (_, Some(_)) => {
                 return Err(format!(
                     "rule {:?}: 'fallback' is only valid with 'action: escalate'",
