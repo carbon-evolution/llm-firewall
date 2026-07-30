@@ -26,6 +26,7 @@ async fn streams_benign_tokens() {
     let state = Arc::new(AppState {
         firewall: fw,
         http: reqwest::Client::new(),
+        agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
         config: test_config(server.uri()),
     });
 

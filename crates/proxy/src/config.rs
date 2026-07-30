@@ -45,21 +45,12 @@ impl Default for NormalizeCfg {
 
 /// Agent-layer inspection of tool blocks in proxied traffic. Off by default, and
 /// shadow-first (`enforce` off) when enabled — verdicts are audited but not applied.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 pub struct AgentInspection {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub enforce: bool,
-}
-
-impl Default for AgentInspection {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            enforce: false,
-        }
-    }
 }
 
 impl NormalizeCfg {

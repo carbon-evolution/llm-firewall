@@ -17,6 +17,7 @@ fn state_with(server_uri: String, policy_yaml: &str) -> Arc<AppState> {
     Arc::new(AppState {
         firewall: fw,
         http: reqwest::Client::new(),
+        agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
         config: test_config(server_uri),
     })
 }

@@ -17,6 +17,7 @@ async fn main() -> anyhow::Result<()> {
         firewall,
         http: reqwest::Client::new(),
         config: cfg.clone(),
+        agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
     });
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
