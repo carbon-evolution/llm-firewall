@@ -59,6 +59,10 @@ pub struct Signals {
     pub subagent_escalation: bool,
     /// The call touches a credential-shaped path. Never dangerous alone.
     pub touches_sensitive_path: bool,
+    /// The MCP server's tool manifest changed vs. its stored pin (rug-pull).
+    pub mcp_manifest_changed: bool,
+    /// A tool name in this handshake collides with another server's or a builtin.
+    pub mcp_tool_shadow: bool,
 }
 
 /// All present sub-conditions are ANDed. Absent fields are ignored.
@@ -96,6 +100,10 @@ pub struct AgentCondition {
     /// it only in combination with taint or egress, never alone.
     #[serde(default)]
     pub touches_sensitive_path: Option<bool>,
+    #[serde(default)]
+    pub mcp_manifest_changed: Option<bool>,
+    #[serde(default)]
+    pub mcp_tool_shadow: Option<bool>,
 }
 
 /// Wire form of a rule, before validation. Only `AgentRule` is used elsewhere.
@@ -287,6 +295,16 @@ impl AgentPolicySet {
         }
         if let Some(want) = c.touches_sensitive_path {
             if s.touches_sensitive_path != want {
+                return false;
+            }
+        }
+        if let Some(want) = c.mcp_manifest_changed {
+            if s.mcp_manifest_changed != want {
+                return false;
+            }
+        }
+        if let Some(want) = c.mcp_tool_shadow {
+            if s.mcp_tool_shadow != want {
                 return false;
             }
         }
@@ -594,5 +612,39 @@ default: allow
     fn the_shipped_default_policy_still_parses_with_escalate_support() {
         let yaml = include_str!("../policies/agent-default.yaml");
         AgentPolicySet::from_yaml(yaml).expect("shipped policy must parse");
+    }
+
+    #[test]
+    fn a_manifest_drift_rule_matches_only_when_the_signal_is_set() {
+        let yaml = "agent_policies:\n  - name: ask-manifest-drift\n    when: { mcp_manifest_changed: true }\n    action: ask\ndefault: allow\n";
+        let p = AgentPolicySet::from_yaml(yaml).unwrap();
+
+        let mut s = Signals::default();
+        assert_eq!(
+            p.evaluate(&s).verdict,
+            Verdict::Allow,
+            "no drift -> default"
+        );
+
+        s.mcp_manifest_changed = true;
+        assert_eq!(p.evaluate(&s).verdict, Verdict::Ask, "drift -> ask");
+    }
+
+    #[test]
+    fn a_tool_shadow_rule_matches_only_when_the_signal_is_set() {
+        let yaml = "agent_policies:\n  - name: ask-tool-shadow\n    when: { mcp_tool_shadow: true }\n    action: ask\ndefault: allow\n";
+        let p = AgentPolicySet::from_yaml(yaml).unwrap();
+
+        let mut s = Signals::default();
+        assert_eq!(p.evaluate(&s).verdict, Verdict::Allow);
+        s.mcp_tool_shadow = true;
+        assert_eq!(p.evaluate(&s).verdict, Verdict::Ask);
+    }
+
+    #[test]
+    fn a_typo_in_an_mcp_condition_is_still_a_parse_error() {
+        // deny_unknown_fields must keep protecting the new keys too.
+        let yaml = "agent_policies:\n  - name: r\n    when: { mcp_manifest_changd: true }\n    action: ask\ndefault: allow\n";
+        assert!(AgentPolicySet::from_yaml(yaml).is_err());
     }
 }
