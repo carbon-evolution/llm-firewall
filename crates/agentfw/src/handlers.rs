@@ -11,13 +11,29 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use llm_firewall_agent::{AgentFirewall, Verdict};
+use llm_firewall_agent::{AgentFirewall, EventKind, Trust, Verdict};
 
 use crate::audit::{AuditFinding, AuditLine, AuditSink, AuditTaint};
 use crate::config::Config;
 use crate::decision;
 use crate::hook::{HookEvent, HookPayload};
+use crate::judge::{Judge, Judgement};
 use crate::map;
+use crate::spans::SpanCache;
+
+/// Turn a judgement plus the rule's declared fallback into a final verdict.
+///
+/// `Injection` always lands on `Ask` — the judge may only *tighten*, never soften.
+/// Everything else (ordinary documentation, or any judge failure) takes the fallback
+/// the rule declared. A missing fallback resolves to `Allow`, never a block: this
+/// firewall never invents a denial from an absent optional dependency. Pure, so the
+/// policy is testable without a server.
+pub fn resolve_escalation(j: Judgement, fallback: Option<Verdict>) -> Verdict {
+    match j {
+        Judgement::Injection => Verdict::Ask,
+        Judgement::Documentation | Judgement::Unavailable(_) => fallback.unwrap_or(Verdict::Allow),
+    }
+}
 
 /// Stable audit-log string for a verdict. Deliberately explicit rather than
 /// `Debug`-derived, for the same reason as `HookEvent::as_str`: the audit log is a
@@ -28,6 +44,12 @@ fn verdict_str(v: Verdict) -> &'static str {
         Verdict::Allow => "allow",
         Verdict::Ask => "ask",
         Verdict::Deny => "deny",
+        // Not expected to reach the audit log: the handler resolves `Escalate`
+        // into a real verdict before `decision::decide` (and this) ever see it.
+        // Named explicitly here rather than a catch-all so a future variant added
+        // to `Verdict` fails to compile here too, instead of silently logging
+        // under someone else's label.
+        Verdict::Escalate => "escalate",
     }
 }
 
@@ -60,6 +82,14 @@ pub struct AppState {
     pub audit: AuditSink,
     pub config: Config,
     pub token: String,
+    /// Bounded per-session cache of untrusted content, keyed by the sequence
+    /// number the taint tracker recorded it under. The judge tier reads from this
+    /// rather than from `TaintMark`, which deliberately carries only an 8-byte
+    /// fingerprint. See `spans.rs`.
+    pub spans: SpanCache,
+    /// The optional local-model escalation tier. Off unless configured; when off,
+    /// every `judge()` call returns `Unavailable` and the rule's fallback applies.
+    pub judge: Judge,
 }
 
 pub type Shared = Arc<AppState>;
@@ -133,6 +163,7 @@ pub async fn hook(
             risk_score: 0,
             findings: vec![],
             taint: None,
+            judge: None,
             egress_hosts: vec![],
             latency_us: started.elapsed().as_micros(),
             truncated: false,
@@ -145,6 +176,27 @@ pub async fn hook(
     let is_pre = payload.event == HookEvent::PreToolUse;
     if payload.event == HookEvent::SessionEnd {
         st.sessions.end(&payload.session_id);
+        st.spans.end_session(&payload.session_id);
+    }
+
+    // Retain untrusted content by the same sequence number the taint tracker
+    // will fingerprint it under, so a later `Escalate` has something to hand the
+    // judge. Mirrors exactly the condition `AgentFirewall::inspect` uses to
+    // decide what becomes taint (`crates/agent/src/engine.rs`): a `ToolResult`
+    // only when its source is untrusted, a `SubagentReport` unconditionally
+    // (subagent output has no `source` field and is always treated as tainted).
+    match &event.kind {
+        EventKind::ToolResult {
+            content, source, ..
+        } => {
+            if source.trust() == Trust::Untrusted {
+                st.spans.put(&payload.session_id, seq, content);
+            }
+        }
+        EventKind::SubagentReport { content, .. } => {
+            st.spans.put(&payload.session_id, seq, content);
+        }
+        _ => {}
     }
 
     // `AgentFirewall::inspect` takes `&mut self`, so the guard must be held across
@@ -155,8 +207,36 @@ pub async fn hook(
         fw.inspect(&event)
     };
 
+    // Resolve `Escalate` into a concrete verdict via the judge before deciding. The
+    // `std::sync::Mutex` guard above is already dropped (scoped block), so the judge's
+    // `.await` never holds a lock. `judged` records what the model said for the audit
+    // log, so a verdict landing on `Ask` (or not) is explainable after the fact.
+    let mut verdict = outcome.verdict;
+    let mut judged: Option<String> = None;
+    if verdict == Verdict::Escalate {
+        // The judge sees the tainted CONTENT and its source — never the tool call.
+        // Design spec §4b: including the action made it fire on ordinary work.
+        let (span, source) = match &outcome.taint {
+            Some(t) => (
+                st.spans.get(&payload.session_id, t.seq).unwrap_or_default(),
+                t.source.label(),
+            ),
+            None => (String::new(), "unknown".to_string()),
+        };
+        if span.trim().is_empty() {
+            // No retained content means nothing to judge — take the fallback rather
+            // than asking the model about an empty string.
+            verdict = outcome.fallback.unwrap_or(Verdict::Allow);
+            judged = Some("Unavailable(\"no retained span\")".into());
+        } else {
+            let j = st.judge.judge(&span, &source).await;
+            judged = Some(format!("{j:?}"));
+            verdict = resolve_escalation(j, outcome.fallback);
+        }
+    }
+
     let d = decision::decide(
-        outcome.verdict,
+        verdict,
         outcome.rule.as_deref(),
         outcome.message.as_deref(),
         st.config.enforce,
@@ -186,6 +266,7 @@ pub async fn hook(
             source: t.source.label(),
             seq: t.seq,
         }),
+        judge: judged,
         egress_hosts: outcome.egress_hosts.clone(),
         latency_us: started.elapsed().as_micros(),
         truncated: mapped.truncated,
@@ -205,6 +286,57 @@ pub async fn hook(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::judge::Judgement;
+
+    #[test]
+    fn a_judgement_of_injection_becomes_ask() {
+        assert_eq!(
+            resolve_escalation(Judgement::Injection, Some(Verdict::Allow)),
+            Verdict::Ask
+        );
+    }
+
+    #[test]
+    fn a_judgement_of_documentation_takes_the_fallback() {
+        assert_eq!(
+            resolve_escalation(Judgement::Documentation, Some(Verdict::Allow)),
+            Verdict::Allow
+        );
+        assert_eq!(
+            resolve_escalation(Judgement::Documentation, Some(Verdict::Ask)),
+            Verdict::Ask
+        );
+    }
+
+    #[test]
+    fn an_unavailable_judge_takes_the_fallback() {
+        assert_eq!(
+            resolve_escalation(Judgement::Unavailable("off".into()), Some(Verdict::Allow)),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn a_missing_fallback_resolves_to_allow_rather_than_blocking() {
+        // Unreachable — the policy parser requires a fallback on every escalate rule.
+        // If it ever happens, never invent a block from a missing field.
+        assert_eq!(
+            resolve_escalation(Judgement::Unavailable("x".into()), None),
+            Verdict::Allow
+        );
+    }
+
+    #[test]
+    fn the_judge_can_only_tighten_never_soften() {
+        // Injection must never produce something weaker than the fallback.
+        for fb in [Verdict::Allow, Verdict::Ask] {
+            let out = resolve_escalation(Judgement::Injection, Some(fb));
+            assert!(
+                out == Verdict::Ask,
+                "Injection must land on Ask regardless of fallback {fb:?}, got {out:?}"
+            );
+        }
+    }
 
     #[test]
     fn session_sequence_numbers_are_monotonic_and_per_session() {

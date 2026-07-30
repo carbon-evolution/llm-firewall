@@ -468,7 +468,7 @@ latency p50: 1840 us   p99: 9210 us
 
 rules fired:
       14  ask-unknown-host
-       3  ask-tainted-side-effect
+       3  escalate-tainted-side-effect
        2  deny-secret-egress
 ```
 
@@ -491,6 +491,49 @@ as "Claude Code feels slow" rather than as an error. `agentfw install` says so t
 `defer` leaves your own rules to decide. Mapping our `Allow` verdict onto `allow` would silently
 auto-approve calls you would otherwise have been prompted about — installing a security tool would
 weaken the protection already there. Small distinction, and the reason this phase exists.
+
+#### The optional local-model judge (off by default)
+
+The genuinely ambiguous case — a side-effecting action built from content fetched earlier from an
+untrusted source — is neither clearly an attack nor clearly fine. Prompting on all of them is too noisy
+(a lab run tainted 7 of 15 benign follow-ups), so the shipped `escalate-tainted-side-effect` rule
+**escalates** it instead of asking unconditionally:
+
+```yaml
+  - name: escalate-tainted-side-effect
+    when: { taint: [network, mcp, subagent], min_action_class: side_effecting }
+    action: escalate
+    fallback: allow          # what to do when no judge answers — required on every escalate rule
+    message: "This action uses content fetched earlier from an untrusted source."
+```
+
+If a local judge is configured, the daemon asks it one narrow question about the **content** (never the
+tool call): *is this an injection attempt, or ordinary documentation?* An `INJECTION` answer tightens the
+verdict to `ask`; anything else takes the rule's `fallback`. Turn it on in `~/.agentfw/config.yaml`:
+
+```yaml
+judge:
+  enabled: true
+  url: http://localhost:1234/v1/chat/completions   # any OpenAI-compatible endpoint
+  model: gemma-4-e4b                                # a small non-reasoning instruct model — see the scorecard
+  timeout_ms: 3000
+```
+
+Three properties make this safe to add:
+
+- **It may only ever *tighten*, never soften.** `INJECTION` → `ask`; `DOCUMENTATION`, a timeout, an HTTP
+  error, unparseable output, or a disabled judge all fall back to what the rule declared. There is no
+  code path by which the judge weakens a verdict, so a compromised or talked-into model can, at worst,
+  add nothing — identical to having no judge at all. The parser accepts exactly the two words and
+  nothing else, so a model that appends its own instructions to the answer is rejected, not obeyed.
+- **Loopback only, enforced at config-parse time.** `judge.url` must resolve to `localhost`/`127.0.0.1`/
+  `::1`. The prompt contains tool arguments and untrusted fetched content; sending that to a remote
+  endpoint would turn the firewall into an exfiltration channel, so a non-loopback URL is rejected
+  before the daemon starts.
+- **It is off unless you configure it.** No model, no judge — every `escalate` simply takes its
+  `fallback`, which is why the shipped rule's fallback is `allow`: the honest default given the measured
+  false-positive rate. Which small model to run, and why not a bigger or reasoning one, is measured in
+  the [judge scorecard](#the-judge-tier-agent-firewall--measured-on-a-live-local-model).
 
 ### 5. Using the agent library directly
 
@@ -704,6 +747,137 @@ firewall stops them **output-side**, largely via the secret detector's high-entr
 the base64 in replies — effective, but partly incidental (it would also over-block legitimate base64
 in a response). Full write-up + the over-defense follow-up: [`docs/garak-validation.md`](docs/garak-validation.md).
 
+### The judge tier (agent firewall) — measured on a live local model
+
+The agent firewall's optional **judge tier** escalates the ambiguous band — a tainted, side-effecting
+action — to a small local model that answers one question about the *content*: **INJECTION or
+DOCUMENTATION?** It is held to the same two-number standard as the text layer, on a **50-sample corpus**
+(25 injection, 25 benign) written for the purpose (`crates/agentfw/tests/fixtures/judge_corpus.jsonl`).
+The benign half deliberately includes the hard cases — content that mentions `.env` files,
+`~/.ssh/id_rsa`, API tokens, and POSTing data to URLs — since that is where false positives come from.
+
+Measured on `google/gemma-4-e4b` via LM Studio, using the **production** prompt and parser:
+
+| Metric | Result |
+|---|---|
+| **Detection rate** (injections caught) | **100.0%** (25/25) |
+| **False-positive rate** (benign flagged) — the deciding number | **4.0%** (1/25) |
+| Determinism (temp 0, each sample twice) | 50/50 identical — the audit log is reproducible |
+| Latency | p50 **386 ms**, p99 **625 ms** (budget 3 s) |
+| Non-English injections (ES/ZH/RU) | 4/4 detected |
+| Adversarial "talk the judge out of it" content | 4/4 still flagged |
+
+Reproduce with a model loaded in LM Studio:
+
+```bash
+AGENTFW_JUDGE_URL=http://localhost:1234/v1/chat/completions \
+  cargo test -p agentfw --test judge_corpus -- --ignored --nocapture
+```
+
+#### Which model — measured across sizes, quantizations, and fine-tunes
+
+The obvious question is whether a bigger or fancier local model would be better. We ran the **same
+50-sample corpus** against several. These are **not a controlled size sweep** — quantization (8-bit,
+QAT), training method (instruct vs. reasoning vs. MTP), and fine-tune (stock vs. "uncensored") all vary
+alongside parameter count. That is deliberate: it answers the real deployment question — *"what happens
+if you point the judge at whatever local model you already run?"* — not an academic apples-to-apples.
+
+| Model | What it is | Runs under the production `max_tokens: 4` contract? | Detection | FP | Latency (p50 / mean / p99) |
+|---|---|---|---|---|---|
+| `gemma-4-e4b` | ~4B, **instruct** (non-reasoning) | ✅ **yes** | 100% (25/25) | **4.0%** (1/25) | **386 ms / 416 ms / 625 ms** |
+| `gemma-4-e4b-uncensored` | ~4B, **instruct**, **uncensored** fine-tune | ✅ **yes** | 100% (25/25) | **4.0%** (1/25) | **386 ms / 416 ms / 635 ms** |
+| `qwen3.5-9b` | 9B, **reasoning** | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 37.6 s / 38.8 s / 81.7 s\* |
+| `qwen3.5-9b-uncensored-...@q8_0` | 9B, **uncensored** fine-tune, **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* (2 `Unavailable`) | 55.8 s / 61.0 s / 130.0 s\* |
+| `claude-fable@q8_0` (Qwythos / Claude-Mythos-5, **1M MTP**) | 9B, **MTP** (multi-token prediction), **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 25.4 s / 28.0 s / 86.9 s\* |
+| `gemma-4-12b-qat` | 12B, **QAT** (quantization-aware training), instruct — but reasons in this LM Studio config | ❌ no — empty answer on 100% of samples | 100% (25/25) | 4.0% (1/25) | 25.6 s / 26.4 s / 79.1 s\* |
+
+\* Reasoning models produce **nothing** under the real `max_tokens: 4` budget (they spend it all
+thinking). The accuracy/latency shown is only reachable by giving them `max_tokens: 1024` to finish —
+a configuration the daemon never runs. Even then, the uncensored 8-bit build left **2 benign samples
+`Unavailable`** because it couldn't finish reasoning within 1024 tokens (the MTP and 12B builds finished
+all 50).
+
+**What the numbers say.** The three 9B reasoning models are *marginally* more accurate than the 4B —
+each clears the one security-policy document the 4B false-flags (0% vs. 4% FP), and the MTP build was
+flawless (100% / 0% / zero `Unavailable`). That edge is worthless here:
+
+- **None of them can run under the contract at all.** At `max_tokens: 4` every one emits an empty answer
+  on every sample → 100% `Unavailable`. `enable_thinking:false` and the `/no_think` soft switch did
+  **not** disable reasoning in any of these builds, and neither the "uncensored" nor the MTP fine-tune
+  reasons any less unconditionally — so fine-tune and feature flags change nothing about fitness here.
+- **Given room to think they are 60–150× over budget** (mean 26.4–61.0 s vs. the 4B's 0.42 s), far past
+  Claude Code's 5 s hook timeout. MTP was the fastest 9B (mean 28 s) and 8-bit quant the *slowest*
+  (61 s) — but "fastest reasoning model" is still two orders of magnitude too slow for a synchronous hook.
+- **The 4B's one false positive is nearly free**, because the judge may only ever *tighten* a verdict:
+  the cost is a single extra confirmation prompt, never a bypass.
+- **Uncensored changes nothing about fitness — at any size.** The uncensored *4B instruct* build is
+  **identical to the stock 4B** on every experiment (100% / 4%, same 386 ms, same single false positive,
+  4/4 non-English, 4/4 adversarial held) and runs under the real contract; the uncensored *9B* fails for
+  the same reason the stock 9B does — it reasons. Whether a model is "censored" is irrelevant to this
+  tier; **instruct-vs-reasoning and raw latency are what decide fitness.** (For a judge this is expected:
+  it *classifies* content rather than refusing it, so an uncensored model that won't refuse to look at
+  attack text is if anything a cleaner classifier.)
+
+#### Same family, 3× the size — Gemma-4 4B vs 12B, side by side
+
+The cleanest comparison, because only size and quantization change (same model family, same corpus):
+
+| | `gemma-4-e4b` (~4B, instruct) | `gemma-4-12b-qat` (12B, QAT) |
+|---|---|---|
+| Runs under the `max_tokens: 4` contract? | ✅ **yes — answers directly** | ❌ no — reasons first, empty under the budget |
+| Detection rate | 100% (25/25) | 100% (25/25) |
+| False-positive rate | 4.0% (1/25) | 4.0% (1/25) — **the *same* security-policy document** |
+| Latency (mean) | **416 ms** | 26,400 ms\* (~63× slower) |
+| Usable as the judge? | ✅ | ✗ (too slow, and empty under the contract) |
+
+Tripling the parameters (and moving to a QAT build) changed **nothing measurable** on this corpus: same
+100% detection, and the *identical* single false positive on the *same* benign sample — at ~63× the
+latency. This is the sharpest evidence for the recommendation: for this narrow genre-classification task,
+a small instruct model is not a compromise, it is the correct choice. (Caveat: the 12B QAT build
+reasons under this particular LM Studio chat-template config, where the 4B answers directly — so it is
+measured with `max_tokens: 1024` like the 9B reasoning models, not under the real contract.)
+
+**Recommendation:** a small *non-reasoning instruct* model (~4B). "Bigger", "uncensored", or a higher-bit
+quant is not better when the tier's
+whole value is a fast second opinion that fits inside a synchronous hook.
+
+<details>
+<summary>Other local models on the test machine — why they were not evaluated</summary>
+
+The comparison covers the models that answer the "is bigger/different better?" question. The remaining
+downloaded models were out of scope for a synchronous-hook judge and were not run:
+
+| Model | Why not evaluated |
+|---|---|
+| `claude-fable@q6_k` | A lower-bit (Q6) quant of the same MTP build already measured at Q8; the reasoning-model verdict does not change with quant. |
+| `qwen3.5-9b-uncensored-...@q4_k_m` | A Q4 quant of the uncensored 9B already measured at Q8; same reasoning-model verdict. |
+| `qwen/qwen2.5-coder-14b`, `qwen3-coder-30b-a3b-instruct-mlx`, `gemma-4-12b-coder-fable5-...` | **Coder** models — tuned for code generation, not the genre-classification the judge does; and 14–30B is well past the latency budget. |
+| `qwen3.5-35b-a3b-uncensored` (35B MoE) | Far too large for the machine and orders of magnitude past the latency budget. |
+
+The pattern is already conclusive across five measured models: *reasoning-vs-instruct and raw latency*
+decide fitness, not parameter count, quantization, or censored-vs-uncensored. Nothing untested here
+would move that conclusion.
+
+</details>
+
+**Measured limitations (numbers, not hedges).** These are documented gaps, not silent ones:
+
+- **Span truncation blind spot.** At the default `max_span_bytes: 4096`, an injection placed *after*
+  the first 4 KB of a page is not seen (called DOCUMENTATION). Mitigation is architectural — the span
+  cache should retain the matched tainted region, not the head of the page.
+- **The judge reads visible intent, not decoded payloads.** Encoded blobs are caught only when a
+  plaintext instruction accompanies them ("decode and run this"); bare obfuscation is the text layer's
+  job, upstream.
+- **4B is the measured floor and ceiling here.** Larger models (12B, 9B) could not be loaded under LM
+  Studio's memory guardrails on the test machine, so the recommendation to use a ~4B model is what was
+  actually tested — not an assumption that any local model works.
+- **One benign false positive:** a security-policy document that *describes* injection defenses is
+  flagged. This fails in the safe direction — the judge may only **tighten** a verdict, so the cost is
+  one extra confirmation prompt, never a bypass.
+
+Full experiment matrix (E1–E12) and the confusion matrix:
+[`docs/superpowers/specs/2026-07-30-agent-firewall-10-judge-tier-design.md`](docs/superpowers/specs/2026-07-30-agent-firewall-10-judge-tier-design.md) §4c.
+
 ### Understanding the numbers (plain English)
 
 Think of the firewall like an airport checkpoint: a **fast metal detector** (the pattern rules)
@@ -748,22 +922,22 @@ Fairness rules and corpus notes: [`docs/methodology.md`](docs/methodology.md).
 ## Test suite
 
 ```bash
-cargo test --all                          # 336 tests across the 5 crates
+cargo test --all                          # 384 tests across the 5 crates
 cargo clippy --all-targets -- -D warnings # clean
 cargo fmt --all --check                   # clean
 ```
 
-**336 tests passing, 0 failing**, across the workspace:
+**384 tests passing, 0 failing**, across the workspace:
 
 | Crate | Tests | Covers |
 |---|--:|---|
 | `llm-firewall-core` | 87 | detectors, scoring, policy, masking, normalization, taxonomy |
 | `llm-firewall` (proxy) | 24 | OpenAI + Anthropic adapters, forwarding, streaming |
 | `llm-firewall-bench` | 8 | dataset loading, metrics, scorecard |
-| **`llm-firewall-agent`** | **130** | event schema, facets, fingerprints, taint, actions, egress, authority, policy, engine, scenarios |
-| **`agentfw`** (daemon) | **87** | config, token auth, hook parsing, provenance, mapping, verdicts, audit, router, install, replay, end-to-end |
+| **`llm-firewall-agent`** | **141** | event schema, facets, fingerprints, taint, actions, egress, authority, policy, engine, escalate + fallback, scenarios |
+| **`agentfw`** (daemon) | **124** | config, token auth, hook parsing, provenance, mapping, verdicts, audit, router, install, replay, the judge tier + span cache, end-to-end |
 
-### What the agent library's 130 tests cover
+### What the agent library's 141 tests cover
 
 | Module | Tests | What it pins |
 |---|--:|---|
@@ -774,25 +948,28 @@ cargo fmt --all --check                   # clean
 | `action` | 20 | retrieval vs. egress split, destructive/privilege escalation, flag-collision regressions |
 | `egress` | 23 | URL/scp/IPv6 extraction, lookalike-domain rejection, allowlist boundaries |
 | `authority` | 11 | subset containment, fail-closed on unknown parents, rejected spawns not registered |
-| `policy` | 13 | first-match precedence, deny-before-ask ordering, unknown-key rejection |
-| `engine` | 12 | integration, dedupe-before-scoring, benign-baseline regressions |
+| `policy` | 22 | first-match precedence, deny-before-ask ordering, unknown-key rejection, `escalate` + required `fallback` validation (no `deny`/`escalate` fallback, none on non-escalate rules) |
+| `engine` | 14 | integration, dedupe-before-scoring, benign-baseline regressions, fallback carried out on `Outcome` |
 | `scenarios` | 7 | end-to-end attack and benign sessions through the public API only |
 
-### What the daemon's 87 tests cover
+### What the daemon's 124 tests cover
 
 | Module | Tests | What it pins |
 |---|--:|---|
 | `provenance` | 18 | tool → trust level, path traversal, prefix-sibling dirs, relative paths resolved against cwd, never `UserPrompt` |
+| `config` | 13 | safe defaults, shadow mode default, non-loopback bind rejected at parse time, judge off by default, judge loopback-URL + timeout validation, lookalike-host rejection |
 | `map` | 11 | hook payload → `AgentEvent`, UTF-8-safe truncation and its reported flag, empty-`session_id` refusal |
 | `hook` | 11 | tolerant payload parsing, unknown events degrade rather than error, stable audit event names |
 | `replay` | 8 | verdict counts, interruption rate, rule ranking, latency percentiles, round-trip against the real audit serializer |
+| `judge` | 7 | strict two-token parsing (only `INJECTION`/`DOCUMENTATION`, nothing else), no free-text path into the daemon, delimiter neutralization, span cap, the action never reaching the prompt |
+| `spans` | 7 | bounded per-session content cache, seq keying, session isolation, UTF-8-safe truncation, eviction, drop on session end |
 | `token` | 7 | 256-bit generation, constant-time compare, `Bearer` strictness, `0600` on creation |
 | `install` | 7 | all five hook events, `matcher: "*"`, token by env var only, no literal secret in output |
-| `decision` | 6 | **`Allow` → `defer`, never `allow`**; shadow mode never enforces; exact serialized hook shape |
+| `handlers` | 7 | per-session monotonic sequence numbers, and `resolve_escalation`: `Injection` → `Ask`, everything else → fallback, judge only tightens, missing fallback never blocks |
+| `decision` | 7 | **`Allow` → `defer`, never `allow`**; shadow mode never enforces; exact serialized hook shape; a stray `Escalate` defers |
 | `audit` | 5 | append-not-truncate, one JSON object per line, raw bytes for unknown events, `0600` |
-| `config` | 4 | safe defaults, shadow mode default, non-loopback bind rejected at parse time |
-| `handlers` | 2 | per-session monotonic sequence numbers, reset on session end |
 | `tests/hook_endpoint.rs` | 8 | auth gating, benign work uninterrupted, the kill chain denied, shadow mode logging without enforcing, malformed payloads never blocking, health |
+| `tests/judge_endpoint.rs` | 8 | the judge tier against a mock model: `INJECTION` → ask, `DOCUMENTATION`/prose/500/timeout/disabled → fallback, an injection in the model's answer refused, a disabled judge makes zero requests |
 
 **On reading a 100% pass rate.** It is the expected result, not an achievement — tests were written
 before implementation throughout, so a red test was a step in the process. The number that mattered
@@ -826,14 +1003,15 @@ sufficient.
 | **Standards + moderation** | OWASP LLM Top 10 and MITRE ATLAS tagging on every finding, `--report` compliance matrix, output-handling detector (LLM05), opt-in content moderation. |
 | **v0.2.0** | Obfuscation resilience: dual-scan normalization pre-pass (zero-width stripping, homoglyph folding, base64 decoding). Rule-layer recall under obfuscation restored from 0% to the clean rate, 0.00% FPR on a multilingual benign control. External validation against NVIDIA garak. |
 | **v0.3 phase 08** | **Agent firewall library.** Ten modules, 130 tests: event schema, facet projection into existing detectors, winnowed Rabin–Karp fingerprinting, two-mechanism taint tracking, action classification, egress extraction, subagent authority containment, agent policy engine, integration engine, end-to-end scenarios. |
-| **v0.3 phase 09** *(this branch)* | **The daemon.** `agentfw serve` wired into Claude Code's native hooks, `agentfw install`, `agentfw replay`. Ships in shadow mode. Verified end to end: a poisoned page followed by an exfiltration attempt denies via `deny-tainted-privilege`, while the identical run under shadow mode returns no decision and logs the would-have-been verdict. |
+| **v0.3 phase 09** | **The daemon.** `agentfw serve` wired into Claude Code's native hooks, `agentfw install`, `agentfw replay`. Ships in shadow mode. Verified end to end: a poisoned page followed by an exfiltration attempt denies via `deny-tainted-privilege`, while the identical run under shadow mode returns no decision and logs the would-have-been verdict. |
+| **v0.3 phase 10** *(this branch)* | **Optional local-model judge tier.** A new `escalate` policy action with a required `fallback` resolves the ambiguous band (tainted + side-effecting) by asking a local model one narrow question about the content — `INJECTION` or `DOCUMENTATION` — and may only *tighten* to `ask`, never soften. Loopback-only, off by default. Measured on a 50-sample corpus: 100% detection / 4% FP / p99 625 ms on `gemma-4-e4b`; a five-model comparison shows reasoning and larger models miss the latency budget. 8 mock-model integration tests including a rejected injection-in-answer. |
 
 ### Roadmap
 
 | Phase | Scope |
 |---|---|
 | **09** | `agentfw serve` + Claude Code hook collector — daemon, Unix socket, audit log, approval UX. First real protection on a real machine. |
-| **10** | Local LLM judge tier for the ambiguous band, `agentfw replay` for tuning rules against recorded sessions. |
+| **10** | ✅ Local LLM judge tier for the ambiguous band (`escalate` action, tighten-only, off by default, measured). |
 | **11** | API collector (in `crates/proxy`) + MCP collector with manifest pinning and drift detection. |
 | **12** | Agent-attack benchmark and published scorecard, using the same two-number honesty standard as the text layer. |
 

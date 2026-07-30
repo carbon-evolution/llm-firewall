@@ -69,6 +69,11 @@ pub fn decide(
         Verdict::Allow => ("defer", None),
         Verdict::Ask => ("ask", reason),
         Verdict::Deny => ("deny", reason),
+        // The handler is responsible for resolving `Escalate` (via the judge, or
+        // its rule's `fallback`) before this function ever sees it. If it somehow
+        // arrives here anyway, the only safe behaviour is no opinion — never widen
+        // it into `deny` or narrow it into `allow` on its behalf.
+        Verdict::Escalate => ("defer", None),
     };
 
     Decision {
@@ -161,6 +166,14 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("deny-x"));
+    }
+
+    #[test]
+    fn escalate_must_be_resolved_before_reaching_a_decision() {
+        // `decide` should never see Escalate — the handler resolves it first. If it
+        // ever does, treat it as the safest thing that cannot be wrong: no opinion.
+        let d = decide(Verdict::Escalate, Some("r"), Some("m"), true);
+        assert_eq!(d.permission_decision, "defer");
     }
 
     #[test]
