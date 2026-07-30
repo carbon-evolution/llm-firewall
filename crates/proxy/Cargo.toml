@@ -16,6 +16,7 @@ path = "src/main.rs"
 
 [dependencies]
 llm-firewall-core = { path = "../core" }
+llm-firewall-agent = { path = "../agent" }
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
 tower = { version = "0.5", features = ["util"] }

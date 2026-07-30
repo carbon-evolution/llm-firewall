@@ -73,7 +73,11 @@ pub fn decide_input(fw: &Firewall, mut request: ChatRequest) -> InputDecision {
     let mut acc = Acc::default();
 
     for msg in request.messages.iter_mut() {
-        if let Some(reason) = scan_segment(fw, &mut msg.content, &mut acc) {
+        // Tool-call assistant messages have no text to scan.
+        let Some(content) = msg.content.as_mut() else {
+            continue;
+        };
+        if let Some(reason) = scan_segment(fw, content, &mut acc) {
             return InputDecision {
                 block_reason: Some(reason),
                 request,
@@ -233,7 +237,8 @@ default: allow
             model: "gpt-4o".into(),
             messages: vec![ChatMessage {
                 role: "user".into(),
-                content: content.into(),
+                content: Some(content.into()),
+                rest: serde_json::Map::new(),
             }],
             stream: false,
             rest: serde_json::Map::new(),
@@ -250,14 +255,20 @@ default: allow
     fn masks_pii_in_place() {
         let d = decide_input(&fw(), req("mail me at alice@acme.com"));
         assert!(d.block_reason.is_none());
-        assert_eq!(d.request.messages[0].content, "mail me at ‹EMAIL›");
+        assert_eq!(
+            d.request.messages[0].content.as_deref(),
+            Some("mail me at ‹EMAIL›")
+        );
     }
 
     #[test]
     fn allows_benign() {
         let d = decide_input(&fw(), req("suggest a movie"));
         assert!(d.block_reason.is_none());
-        assert_eq!(d.request.messages[0].content, "suggest a movie");
+        assert_eq!(
+            d.request.messages[0].content.as_deref(),
+            Some("suggest a movie")
+        );
     }
 
     fn multi_req(contents: &[&str]) -> ChatRequest {
@@ -267,7 +278,8 @@ default: allow
                 .iter()
                 .map(|c| ChatMessage {
                     role: "user".into(),
-                    content: (*c).into(),
+                    content: Some((*c).into()),
+                    rest: serde_json::Map::new(),
                 })
                 .collect(),
             stream: false,
@@ -292,8 +304,14 @@ default: allow
             multi_req(&["mail me at alice@acme.com", "just a normal question"]),
         );
         assert!(d.block_reason.is_none());
-        assert_eq!(d.request.messages[0].content, "mail me at ‹EMAIL›");
-        assert_eq!(d.request.messages[1].content, "just a normal question"); // untouched
+        assert_eq!(
+            d.request.messages[0].content.as_deref(),
+            Some("mail me at ‹EMAIL›")
+        );
+        assert_eq!(
+            d.request.messages[1].content.as_deref(),
+            Some("just a normal question")
+        ); // untouched
     }
 
     // --- Anthropic path ---

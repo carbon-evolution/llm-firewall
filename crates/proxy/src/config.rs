@@ -43,6 +43,16 @@ impl Default for NormalizeCfg {
     }
 }
 
+/// Agent-layer inspection of tool blocks in proxied traffic. Off by default, and
+/// shadow-first (`enforce` off) when enabled — verdicts are audited but not applied.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct AgentInspection {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub enforce: bool,
+}
+
 impl NormalizeCfg {
     /// Build a `Normalizer` when enabled; `None` disables the pre-pass entirely.
     pub fn to_normalizer(&self) -> Option<Normalizer> {
@@ -68,6 +78,8 @@ pub struct Config {
     pub stream_window: usize,
     #[serde(default)]
     pub normalize: NormalizeCfg,
+    #[serde(default)]
+    pub agent_inspection: AgentInspection,
 }
 
 fn default_bind() -> String {
@@ -129,6 +141,13 @@ mod tests {
         assert_eq!(c.bind, "0.0.0.0:8080");
         assert_eq!(c.fail_mode, FailMode::FailClosed);
         assert_eq!(c.stream_window, 64);
+    }
+
+    #[test]
+    fn agent_inspection_is_off_by_default() {
+        let c = Config::from_yaml("upstream: {}").unwrap();
+        assert!(!c.agent_inspection.enabled, "must be opt-in");
+        assert!(!c.agent_inspection.enforce, "shadow-first");
     }
 
     #[test]

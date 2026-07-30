@@ -29,6 +29,7 @@ async fn blocks_injection_before_upstream() {
     let state = Arc::new(AppState {
         firewall: fw,
         http: reqwest::Client::new(),
+        agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
         config: test_config(server.uri()),
     });
 
@@ -72,6 +73,7 @@ async fn forwards_authorization_header_upstream() {
     let state = Arc::new(AppState {
         firewall: fw,
         http: reqwest::Client::new(),
+        agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
         config: test_config(server.uri()),
     });
 
@@ -111,6 +113,7 @@ async fn forwards_benign_and_returns_upstream_body() {
     let state = Arc::new(AppState {
         firewall: fw,
         http: reqwest::Client::new(),
+        agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
         config: test_config(server.uri()),
     });
 

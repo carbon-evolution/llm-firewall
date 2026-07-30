@@ -22,6 +22,46 @@ pub struct AppState {
     pub firewall: Firewall,
     pub http: reqwest::Client,
     pub config: Config,
+    /// Agent-layer firewall for tool-block inspection. Behind a Mutex because
+    /// `inspect` takes `&mut self`. Only consulted when `agent_inspection.enabled`.
+    pub agent: std::sync::Mutex<llm_firewall_agent::AgentFirewall>,
+}
+
+/// Run agent inspection over a response's tool calls against the request's tool
+/// results. Returns `Some(reason)` only when the verdict is `Deny` *and* enforcement
+/// is on — the caller then refuses the response. Otherwise the verdict is audited
+/// (via the tracing warning) and the response passes: shadow-first.
+fn agent_refuse_reason(
+    state: &AppState,
+    request_id: &str,
+    results: Vec<String>,
+    calls: Vec<crate::agent_scan::ToolCall>,
+) -> Option<String> {
+    if calls.is_empty() {
+        return None;
+    }
+    let v = {
+        let mut fw = state.agent.lock().expect("agent mutex");
+        crate::agent_scan::inspect_cycle(&mut fw, request_id, &results, &calls)
+    };
+    if matches!(v.verdict, llm_firewall_agent::Verdict::Allow) {
+        return None;
+    }
+    tracing::warn!(
+        cycle = %request_id,
+        verdict = ?v.verdict,
+        reason = ?v.reason,
+        "agent verdict on a response tool_use"
+    );
+    if state.config.agent_inspection.enforce
+        && matches!(v.verdict, llm_firewall_agent::Verdict::Deny)
+    {
+        return Some(
+            v.reason
+                .unwrap_or_else(|| "agent policy denied a tool call".into()),
+        );
+    }
+    None
 }
 
 pub type Shared = Arc<AppState>;
@@ -130,6 +170,17 @@ pub async fn chat_completions(
         return (StatusCode::BAD_GATEWAY, Json(error_body(&reason))).into_response();
     }
 
+    // Agent layer: inspect the response's tool calls against the request's tool
+    // results. Non-streaming only (this is past the stream early-return).
+    if state.config.agent_inspection.enabled {
+        let results = crate::agent_scan::openai_tool_results(&decision.request);
+        let calls = crate::agent_scan::openai_tool_calls(&body);
+        if let Some(reason) = agent_refuse_reason(&state, &request_id, results, calls) {
+            audit_output_block(&request_id, &reason, started);
+            return (StatusCode::BAD_GATEWAY, Json(error_body(&reason))).into_response();
+        }
+    }
+
     audit_allow(
         &request_id,
         decision.score,
@@ -209,6 +260,18 @@ pub async fn messages(
     if let Some(reason) = decide_output(&state.firewall, &assistant) {
         audit_output_block(&request_id, &reason, started);
         return (StatusCode::BAD_GATEWAY, Json(anthropic_error_body(&reason))).into_response();
+    }
+
+    // Agent layer: inspect the response's tool_use blocks against the request's
+    // tool_result blocks. Non-streaming only.
+    if state.config.agent_inspection.enabled {
+        let req_value = serde_json::to_value(&decision.request).unwrap_or_default();
+        let results = crate::agent_scan::anthropic_tool_results(&req_value);
+        let calls = crate::agent_scan::anthropic_tool_calls(&body);
+        if let Some(reason) = agent_refuse_reason(&state, &request_id, results, calls) {
+            audit_output_block(&request_id, &reason, started);
+            return (StatusCode::BAD_GATEWAY, Json(anthropic_error_body(&reason))).into_response();
+        }
     }
 
     audit_allow(

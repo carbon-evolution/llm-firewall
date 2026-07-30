@@ -3,6 +3,7 @@
 
 //! LLM Firewall proxy — library surface (also used by integration tests).
 
+pub mod agent_scan;
 pub mod anthropic;
 pub mod audit;
 pub mod config;
@@ -62,5 +63,6 @@ pub fn test_config(base: String) -> Config {
         fail_mode: FailMode::FailClosed,
         stream_window: 64,
         normalize: config::NormalizeCfg::default(),
+        agent_inspection: config::AgentInspection::default(),
     }
 }
