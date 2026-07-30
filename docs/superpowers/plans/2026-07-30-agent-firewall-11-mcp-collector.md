@@ -4,7 +4,7 @@
 
 **Goal:** A transparent `agentfw mcp` stdio proxy that tees the MCP handshake to the daemon, which pins each server's tool manifest and flags rug-pulls (manifest drift), tool-name shadowing, and description poisoning at handshake.
 
-**Architecture:** The `agent` crate stays I/O-free: it gains an `EventKind::McpHandshake`, two boolean `Signals`/`AgentCondition` fields, and an `inspect_mcp_handshake(server, tools, manifest_changed, tool_shadow) -> Outcome` method that runs the injection detector over descriptions and evaluates policy. The `agentfw` daemon owns all I/O: a persistent `ManifestStore` (per-server pin hashes) and an in-memory `ToolRegistry` (cross-server tool names) live in `AppState`; a new `/mcp` endpoint computes drift + shadow from that state, calls `inspect_mcp_handshake`, persists the new pin, and audits. A separate `agentfw mcp` process is the stdio relay that forwards handshakes to `/mcp` and enforces the verdict.
+**Architecture:** The `agent` crate stays I/O-free: it gains an `EventKind::ManifestSeen`, two boolean `Signals`/`AgentCondition` fields, and an `inspect_mcp_handshake(server, tools, manifest_changed, tool_shadow) -> Outcome` method that runs the injection detector over descriptions and evaluates policy. The `agentfw` daemon owns all I/O: a persistent `ManifestStore` (per-server pin hashes) and an in-memory `ToolRegistry` (cross-server tool names) live in `AppState`; a new `/mcp` endpoint computes drift + shadow from that state, calls `inspect_mcp_handshake`, persists the new pin, and audits. A separate `agentfw mcp` process is the stdio relay that forwards handshakes to `/mcp` and enforces the verdict.
 
 **Tech Stack:** Rust 2021, tokio (async relay), reqwest (rustls, proxy→daemon), serde_json, `sha2` (new direct dep in `agentfw`), wiremock + a mock stdio child for tests.
 
@@ -25,7 +25,7 @@
 
 | File | Responsibility |
 |------|---------------|
-| `crates/agent/src/event.rs` | *(modify)* `ToolDecl` gains a `schema` field; new `EventKind::McpHandshake { server, tools }` |
+| `crates/agent/src/event.rs` | *(modify)* `ToolDecl` gains a `schema` field; new `EventKind::ManifestSeen { server, tools }` |
 | `crates/agent/src/facet.rs` | *(modify)* project `McpHandshake` tool descriptions onto `Facet::ToolDescription` |
 | `crates/agent/src/policy.rs` | *(modify)* `Signals.mcp_manifest_changed` / `mcp_tool_shadow`; `AgentCondition` fields + matching |
 | `crates/agent/src/engine.rs` | *(modify)* `AgentFirewall::inspect_mcp_handshake(...) -> Outcome` |
@@ -61,7 +61,7 @@ Add to `crates/agent/src/event.rs`'s `#[cfg(test)] mod tests`:
             parent: None,
             seq: 1,
             at_ms: 0,
-            kind: EventKind::McpHandshake {
+            kind: EventKind::ManifestSeen {
                 server: "github".into(),
                 tools: vec![ToolDecl {
                     name: "create_issue".into(),
@@ -118,13 +118,13 @@ Add a variant to `EventKind` (place after `SubagentReport`):
 - [ ] **Step 4: Run to verify it passes**
 
 Run: `cargo test -p llm-firewall-agent event::`
-Expected: PASS. Then `cargo build -p llm-firewall-agent` — fix any non-exhaustive `match ev.kind` the new variant introduced by adding `EventKind::McpHandshake { .. } => {}` arms where the compiler points (in `facet.rs` and `engine.rs`; the real arms come in Tasks 2 and 4).
+Expected: PASS. Then `cargo build -p llm-firewall-agent` — fix any non-exhaustive `match ev.kind` the new variant introduced by adding `EventKind::ManifestSeen { .. } => {}` arms where the compiler points (in `facet.rs` and `engine.rs`; the real arms come in Tasks 2 and 4).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add crates/agent/src/event.rs
-git commit -m "feat(agent): ToolDecl schema field + EventKind::McpHandshake"
+git commit -m "feat(agent): ToolDecl schema field + EventKind::ManifestSeen"
 ```
 
 ---
@@ -145,7 +145,7 @@ Add to `crates/agent/src/facet.rs`'s test module:
     fn a_mcp_handshake_projects_each_description_as_a_tool_description_facet() {
         let ev = AgentEvent {
             session: "s".into(), agent: "m".into(), parent: None, seq: 1, at_ms: 0,
-            kind: EventKind::McpHandshake {
+            kind: EventKind::ManifestSeen {
                 server: "srv".into(),
                 tools: vec![
                     ToolDecl { name: "a".into(), description: "harmless".into(), schema: serde_json::Value::Null },
@@ -172,7 +172,7 @@ Expected: FAIL — descriptions not projected (empty vec).
 In `crates/agent/src/facet.rs`, in the `match &ev.kind` inside `facets`, replace the placeholder `McpHandshake` arm from Task 1 with:
 
 ```rust
-        EventKind::McpHandshake { tools, .. } => {
+        EventKind::ManifestSeen { tools, .. } => {
             for t in tools {
                 if !t.description.is_empty() {
                     out.push((Facet::ToolDescription, t.description.clone()));
@@ -355,7 +355,7 @@ In `crates/agent/src/engine.rs`, add to `impl AgentFirewall` (mirror the detecto
             parent: None,
             seq: 0,
             at_ms: 0,
-            kind: EventKind::McpHandshake {
+            kind: EventKind::ManifestSeen {
                 server: server.to_string(),
                 tools: tools.to_vec(),
             },
@@ -1482,4 +1482,4 @@ gh pr create --title "feat: MCP collector — handshake supply-chain defenses (p
 
 - **Spec coverage:** §2 insertion → Tasks 10–11; §3.1 drift → Tasks 6,7,9; §3.2 shadow → Tasks 7,9; §3.3 poisoning → Tasks 2,4,8; §4 units → Tasks 5–7,9,10; §6 shadow-default/enforce → Task 9 (`decision::decide` + `enforce`) and Task 10 (`should_withhold`); §7 fail-open → Task 9 (allow on error) + Task 10 (`Unavailable` never withholds); §8 tests → each task's tests.
 - **Deferred honestly:** cross-server shadowing seeds names lazily per daemon run (Task 7 `seed_registry` note) because pins store the hash, not names; per-call inspection and HTTP/SSE transport are out of v1 scope per the spec.
-- **Type consistency:** `ToolDecl { name, description, schema }`, `EventKind::McpHandshake { server, tools }`, `inspect_mcp_handshake(&mut self, &str, &[ToolDecl], bool, bool) -> Outcome`, `manifest_hash(&[ToolDecl]) -> String`, `diff(&[ToolDecl], &[ToolDecl]) -> String`, `ManifestStore::{new,get,put}`, `ToolRegistry::{with_builtins,shadows,record}`, `proxy::{Verdict, should_withhold, run, ProxyCfg}` used consistently across tasks.
+- **Type consistency:** `ToolDecl { name, description, schema }`, `EventKind::ManifestSeen { server, tools }`, `inspect_mcp_handshake(&mut self, &str, &[ToolDecl], bool, bool) -> Outcome`, `manifest_hash(&[ToolDecl]) -> String`, `diff(&[ToolDecl], &[ToolDecl]) -> String`, `ManifestStore::{new,get,put}`, `ToolRegistry::{with_builtins,shadows,record}`, `proxy::{Verdict, should_withhold, run, ProxyCfg}` used consistently across tasks.
