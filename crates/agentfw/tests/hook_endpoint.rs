@@ -25,6 +25,8 @@ fn state(enforce: bool, dir: &std::path::Path) -> agentfw::Shared {
         // Disabled judge (default): every judge() returns Unavailable, so any
         // Escalate falls through to its rule's fallback — the standard install.
         judge: agentfw::judge::Judge::new(Default::default()),
+        manifests: agentfw::mcp::store::ManifestStore::new(&dir.join("manifests")),
+        tools: agentfw::mcp::store::ToolRegistry::with_builtins(),
         config: Config {
             enforce,
             ..Config::default()

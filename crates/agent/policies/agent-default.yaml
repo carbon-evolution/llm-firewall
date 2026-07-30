@@ -69,6 +69,18 @@ agent_policies:
     fallback: allow
     message: "This action uses content fetched earlier from an untrusted source."
 
+  # A pinned MCP server whose manifest changed since we last saw it — the "rug pull".
+  - name: ask-manifest-drift
+    when: { mcp_manifest_changed: true }
+    action: ask
+    message: "An MCP server's tool manifest changed since it was pinned. Review the diff before trusting it."
+
+  # Two servers, or a server and a builtin, declaring the same tool name.
+  - name: ask-tool-shadow
+    when: { mcp_tool_shadow: true }
+    action: ask
+    message: "This MCP server declares a tool name that collides with another tool. Allow?"
+
   - name: ask-unknown-host
     when: { egress_not_allowlisted: true }
     action: ask

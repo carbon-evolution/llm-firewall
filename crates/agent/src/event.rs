@@ -64,6 +64,11 @@ pub struct ToolDecl {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// The tool's JSON input schema, verbatim from the MCP `tools/list` response.
+    /// Part of the pinned manifest: a rug-pull that widens a tool's parameters
+    /// changes this even when the name and description are untouched.
+    #[serde(default)]
+    pub schema: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -190,6 +195,7 @@ mod tests {
                 tools: vec![ToolDecl {
                     name: "shodan_search".into(),
                     description: "search shodan".into(),
+                    schema: serde_json::Value::Null,
                 }],
             },
             EventKind::SessionStart,
@@ -250,6 +256,34 @@ mod tests {
         }"#;
         let ev: AgentEvent = serde_json::from_str(json).unwrap();
         assert_eq!(ev.kind, EventKind::Unknown);
+    }
+
+    #[test]
+    fn a_manifest_seen_event_round_trips_with_tool_schemas() {
+        let ev = AgentEvent {
+            session: "s1".into(),
+            agent: "main".into(),
+            parent: None,
+            seq: 1,
+            at_ms: 0,
+            kind: EventKind::ManifestSeen {
+                server: "github".into(),
+                tools: vec![ToolDecl {
+                    name: "create_issue".into(),
+                    description: "Open an issue".into(),
+                    schema: serde_json::json!({"type": "object"}),
+                }],
+            },
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        let back: AgentEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(ev, back);
+    }
+
+    #[test]
+    fn a_tool_decl_without_a_schema_defaults_to_null() {
+        let t: ToolDecl = serde_json::from_str(r#"{"name":"x","description":"y"}"#).unwrap();
+        assert_eq!(t.schema, serde_json::Value::Null);
     }
 
     #[test]

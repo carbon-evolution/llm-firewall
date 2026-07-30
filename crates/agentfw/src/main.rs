@@ -29,6 +29,16 @@ enum Cmd {
     },
     /// Print the settings.json hook block and setup instructions.
     Install,
+    /// Proxy an MCP server, pinning its tool manifest at handshake.
+    Mcp {
+        /// Stable identity for this server (keys its pin + audit). Defaults to a
+        /// hash of the command.
+        #[arg(long)]
+        id: Option<String>,
+        /// The real server command and its args, after `--`.
+        #[arg(last = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -61,6 +71,34 @@ fn main() -> anyhow::Result<()> {
             );
             Ok(())
         }
+        Cmd::Mcp { id, command } => {
+            let (cmd, args) = command
+                .split_first()
+                .ok_or_else(|| anyhow::anyhow!("no server command given after --"))?;
+            let home = Config::home()?;
+            let cfg = match std::fs::read_to_string(home.join("config.yaml")) {
+                Ok(s) => Config::from_yaml(&s)?,
+                Err(_) => Config::default(),
+            };
+            let token = agentfw::token::load_or_create(&home.join("token"))?;
+            let server_id = id.unwrap_or_else(|| {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(command.join(" ").as_bytes());
+                format!("srv-{:x}", h.finalize()).chars().take(12).collect()
+            });
+            let proxy_cfg = agentfw::mcp::proxy::ProxyCfg {
+                server_id,
+                daemon_url: format!("http://{}:{}/mcp", cfg.bind, cfg.port),
+                token,
+                command: cmd.clone(),
+                args: args.to_vec(),
+            };
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?
+                .block_on(agentfw::mcp::proxy::run(proxy_cfg))
+        }
     }
 }
 
@@ -90,6 +128,8 @@ async fn serve() -> anyhow::Result<()> {
         audit: AuditSink::open(&audit_path)?,
         spans: agentfw::spans::SpanCache::new(64, cfg.judge.max_span_bytes),
         judge: agentfw::judge::Judge::new(cfg.judge.clone()),
+        manifests: agentfw::mcp::store::ManifestStore::new(&home.join("manifests")),
+        tools: agentfw::mcp::store::ToolRegistry::with_builtins(),
         config: cfg.clone(),
         token,
     });

@@ -12,6 +12,7 @@ pub mod hook;
 pub mod install;
 pub mod judge;
 pub mod map;
+pub mod mcp;
 pub mod provenance;
 pub mod replay;
 pub mod spans;
@@ -27,6 +28,7 @@ pub use handlers::{AppState, Shared};
 pub fn app(state: Shared) -> Router {
     Router::new()
         .route("/hook", post(handlers::hook))
+        .route("/mcp", post(handlers::mcp))
         .route("/health", get(handlers::health))
         .with_state(state)
 }

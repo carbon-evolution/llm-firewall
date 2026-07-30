@@ -90,6 +90,10 @@ pub struct AppState {
     /// The optional local-model escalation tier. Off unless configured; when off,
     /// every `judge()` call returns `Unavailable` and the rule's fallback applies.
     pub judge: Judge,
+    /// Persistent per-server MCP manifest pins (the rug-pull defense).
+    pub manifests: crate::mcp::store::ManifestStore,
+    /// Cross-server tool-name registry (the shadowing defense).
+    pub tools: crate::mcp::store::ToolRegistry,
 }
 
 pub type Shared = Arc<AppState>;
@@ -281,6 +285,115 @@ pub async fn hook(
         return (StatusCode::OK, Json(out));
     }
     (StatusCode::OK, Json(serde_json::json!({})))
+}
+
+#[derive(serde::Deserialize)]
+pub struct McpHandshakeReq {
+    pub server: String,
+    #[serde(default)]
+    pub tools: Vec<llm_firewall_agent::ToolDecl>,
+}
+
+/// The MCP handshake endpoint. Computes drift + shadowing from persistent state, runs
+/// detection + policy via `inspect_mcp_handshake`, pins the new manifest, audits, and
+/// returns the verdict. On any internal failure it returns `allow` (fail open) — a
+/// collector that blocks handshakes on its own bug gets uninstalled.
+pub async fn mcp(
+    State(st): State<Shared>,
+    headers: HeaderMap,
+    body: String,
+) -> (StatusCode, Json<serde_json::Value>) {
+    let auth = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !crate::token::verify(&st.token, auth) {
+        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({})));
+    }
+    let req: McpHandshakeReq = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = %e, "unparsable /mcp payload; allowing");
+            return (
+                StatusCode::OK,
+                Json(serde_json::json!({ "verdict": "allow" })),
+            );
+        }
+    };
+
+    let hash = crate::mcp::manifest::manifest_hash(&req.tools);
+    let pinned = st.manifests.get(&req.server);
+    let manifest_changed = matches!(&pinned, Some(old) if *old != hash);
+    let names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
+    let shadowed = st.tools.shadows(&req.server, &names);
+    let shadow = shadowed.is_some();
+
+    let outcome = {
+        let mut fw = st.firewall.lock().expect("firewall mutex");
+        fw.inspect_mcp_handshake(&req.server, &req.tools, manifest_changed, shadow)
+    };
+
+    // Pin the new manifest and record its names regardless of verdict: the operator is
+    // being told about the change now, so the next handshake compares against it.
+    let _ = st.manifests.put(&req.server, &hash);
+    st.tools.record(&req.server, &names);
+
+    // The pin stores only the hash, so the reason is a summary, not a per-tool diff —
+    // a full diff would require persisting the previous manifest (a v1 deferral).
+    let reason = if manifest_changed {
+        Some(format!(
+            "manifest drift on {}: the pinned tool manifest changed",
+            req.server
+        ))
+    } else if let Some(name) = shadowed {
+        Some(format!("tool name '{name}' collides with an existing tool"))
+    } else {
+        outcome.message.clone()
+    };
+
+    let d = decision::decide(
+        outcome.verdict,
+        outcome.rule.as_deref(),
+        reason.as_deref(),
+        st.config.enforce,
+    );
+
+    let _ = st.audit.write(&AuditLine {
+        at_ms: now_ms(),
+        session: req.server.clone(),
+        seq: 0,
+        event: "mcp_handshake".into(),
+        tool: None,
+        verdict: verdict_str(d.would_have_been).to_string(),
+        shadow: d.shadow,
+        rule: outcome.rule.clone(),
+        risk_score: outcome.risk_score,
+        findings: outcome
+            .findings
+            .iter()
+            .map(|(_, f)| AuditFinding {
+                detector: f.detector.clone(),
+                severity: format!("{:?}", f.severity).to_lowercase(),
+                owasp: f.owasp.clone(),
+                atlas: f.atlas.clone(),
+            })
+            .collect(),
+        taint: None,
+        judge: None,
+        egress_hosts: vec![],
+        latency_us: 0,
+        truncated: false,
+        raw: None,
+    });
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "verdict": verdict_str(d.would_have_been),
+            "enforce": st.config.enforce,
+            "reason": reason,
+        })),
+    )
 }
 
 #[cfg(test)]

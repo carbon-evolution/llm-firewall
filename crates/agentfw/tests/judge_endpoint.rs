@@ -66,6 +66,8 @@ fn build_state(policy_yaml: &str, judge: JudgeCfg, dir: &std::path::Path) -> age
         audit: AuditSink::open(&dir.join("audit.jsonl")).unwrap(),
         spans: agentfw::spans::SpanCache::new(64, 4096),
         judge: Judge::new(judge),
+        manifests: agentfw::mcp::store::ManifestStore::new(&dir.join("manifests")),
+        tools: agentfw::mcp::store::ToolRegistry::with_builtins(),
         config: Config {
             enforce: true,
             ..Config::default()
