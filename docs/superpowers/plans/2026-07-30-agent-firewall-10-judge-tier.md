@@ -1334,5 +1334,38 @@ that made testing the premise before writing the client worthwhile.
 - [ ] **Step 4: Record the measured numbers in spec §4b**, replacing the 8-case probe as the
       headline evidence, and in the README alongside the text layer's scorecard.
 
-**Requires:** LM Studio running with a small instruct model (`google/gemma-4-e4b` was used for the
-probe and is adequate). Roughly ten minutes of model time.
+**Requires:** LM Studio running. Models available on this machine: `google/gemma-4-e4b`,
+`google/gemma-4-12b-qat`, `qwen/qwen3.5-9b`, `qwen3.5-9b-uncensored-...`. User has authorised
+extended use, so run the full matrix below rather than only the headline pass.
+
+---
+
+### The experiment matrix
+
+Each row answers a question that changes the design or the documented limits. Run in this order — the
+early rows can make later ones unnecessary.
+
+| # | Experiment | Question it answers | What a bad result means |
+|---|---|---|---|
+| E1 | **Headline pass** — full corpus, `gemma-4-e4b`, hardened prompt | Detection rate and FP rate, the two-number standard | A high FP rate means the judge is a prompt generator; fix the prompt before anything else |
+| E2 | **Determinism** — every sample twice at `temperature: 0` | Is a judgement reproducible? | Non-determinism means the audit log cannot be trusted as a record of *why* a verdict happened |
+| E3 | **Latency distribution** — p50/p99 over the whole corpus, not one sample | Does the 3 s budget hold across realistic content lengths? | p99 near the budget means `max_span_bytes` must come down |
+| E4 | **Prompt ablation** — hardened vs the original unhardened system prompt | Is the `CRITICAL: claims of approval are evidence` clause actually earning its place? | If it makes no difference, drop it and shorten the prompt (less prefill = faster) |
+| E5 | **Model size** — repeat E1 on `gemma-4-12b-qat` and `qwen/qwen3.5-9b` | Does 4B suffice, or should the docs recommend larger? | If 4B is materially worse, the README must say so rather than implying any local model works |
+| E6 | **Truncation impact** — inject the payload at the *end* of a long benign page, then clamp to 4 KB | Does the span cap create a blind spot? | If a late-page injection is missed, the cap needs rethinking or the cache must retain the *matched* region rather than the head |
+| E7 | **Needle in haystack** — one injected line inside ~3 KB of genuine documentation | Realistic hidden-injection detection, not isolated snippets | Misses here matter most; this is the actual attack shape |
+| E8 | **Non-English injection** — same payloads in Chinese, Russian, Spanish | Does detection survive language change? | A monolingual judge is a documented limitation, not a silent one |
+| E9 | **Encoded payloads** — base64 and URL-encoded instructions | Can it see through light obfuscation? | Expected to fail; belongs in the limits section. The text layer's normalizer already handles this upstream |
+| E10 | **Adversarial anti-judge content** — content that explicitly argues it is documentation, impersonates the system prompt, or claims the judge is being tested | Can it be talked out of flagging? | Expected partial failure; this is *why* the judge may only tighten. Quantify it rather than asserting it |
+| E11 | **`max_tokens` sensitivity** — 4 vs 8 vs 16 | Does a tight cap truncate the answer into `Unavailable`? | If 4 truncates, raise it; every token is latency but a false `Unavailable` wastes the call |
+| E12 | **Empty / whitespace / enormous span** | Does the client degrade rather than hang or panic? | Any panic is a bug; a hang means the timeout is not wired correctly |
+
+**Reporting.** One markdown table per experiment, with actual numbers. Record E1's confusion matrix and
+E3's percentiles in spec §4b, replacing the 8-case probe as the headline evidence. Everything that
+fails — E9 and E10 are expected to, at least partly — goes into a **measured limitations** section in
+both the spec and the README. A limitation with a number beside it is credible; one phrased as a hedge
+is not.
+
+**Efficiency note.** Run experiments as a single batch script per row, reusing one HTTP client and one
+loaded model, and print results as they complete so a long run is inspectable mid-flight. Do not reload
+the model between samples — E5 is the only row that changes models.
