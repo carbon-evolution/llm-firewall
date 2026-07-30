@@ -16,7 +16,7 @@ A pure-Rust **firewall for LLMs and the agents built on them**. Two layers, one 
 ![Release](https://img.shields.io/github/v/release/carbon-evolution/llm-firewall?sort=semver)
 ![GHCR](https://img.shields.io/badge/ghcr.io-container-2496ed?logo=docker&logoColor=white)
 ![Rust](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)
-![Tests](https://img.shields.io/badge/tests-336%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-405%20passing-brightgreen)
 ![Made with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e?logo=rust&logoColor=white)
 
 <p align="center">
@@ -535,6 +535,45 @@ Three properties make this safe to add:
   false-positive rate. Which small model to run, and why not a bigger or reasoning one, is measured in
   the [judge scorecard](#the-judge-tier-agent-firewall--measured-on-a-live-local-model).
 
+#### MCP supply-chain defenses (`agentfw mcp`)
+
+MCP servers are third-party code that hands the agent a list of tools at startup. Three attacks live at
+that boundary, and none are visible to the hook collector: a **rug-pull** (a server that ships a benign
+manifest, gets trusted, then quietly changes a tool later), **tool-name shadowing** (two servers, or a
+server and a builtin like `Bash`, claiming the same name), and **description poisoning** (injection text
+planted in a tool's description, which the model reads as guidance).
+
+`agentfw mcp` is a **transparent stdio proxy** you wrap your MCP server command in. In your client's MCP
+config (`.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "command": "agentfw",
+      "args": ["mcp", "--id", "github", "--", "npx", "-y", "@modelcontextprotocol/server-github"]
+    }
+  }
+}
+```
+
+It spawns the real server, relays JSON-RPC **byte-for-byte** in both directions, and tees only the
+handshake to the daemon's `/mcp` endpoint. The daemon **pins** each server's tool manifest (a stable
+SHA-256 over sorted tool names, descriptions, and input schemas, at `~/.agentfw/manifests/`) and, on any
+later handshake, checks three things deterministically — no model required:
+
+- **Drift** — the manifest hash differs from the pin → `ask` (the `ask-manifest-drift` rule).
+- **Shadowing** — a tool name already owned by another server or a builtin → `ask` (`ask-tool-shadow`).
+- **Poisoning** — the injection detector over each description → the existing
+  `ask-injection-in-tool-description` rule.
+
+Like the rest of the daemon it **ships in shadow mode**: it pins and audits but withholds nothing until
+you set `enforce: true`. Because an MCP handshake has no interactive "ask" moment, enforcement makes a
+non-`allow` verdict **fail closed** — the proxy returns a JSON-RPC error in place of the manifest, so the
+server starts with no tools that session. And it **fails open** on its own errors: if the daemon is
+unreachable or a line is unparsable, the handshake passes through untouched — a broken firewall must
+never break MCP.
+
 ### 5. Using the agent library directly
 
 The agent layer is a library today — the daemon and collectors land in phase 09. To embed it:
@@ -922,22 +961,22 @@ Fairness rules and corpus notes: [`docs/methodology.md`](docs/methodology.md).
 ## Test suite
 
 ```bash
-cargo test --all                          # 384 tests across the 5 crates
+cargo test --all                          # 405 tests across the 5 crates
 cargo clippy --all-targets -- -D warnings # clean
 cargo fmt --all --check                   # clean
 ```
 
-**384 tests passing, 0 failing**, across the workspace:
+**405 tests passing, 0 failing**, across the workspace:
 
 | Crate | Tests | Covers |
 |---|--:|---|
 | `llm-firewall-core` | 87 | detectors, scoring, policy, masking, normalization, taxonomy |
 | `llm-firewall` (proxy) | 24 | OpenAI + Anthropic adapters, forwarding, streaming |
 | `llm-firewall-bench` | 8 | dataset loading, metrics, scorecard |
-| **`llm-firewall-agent`** | **141** | event schema, facets, fingerprints, taint, actions, egress, authority, policy, engine, escalate + fallback, scenarios |
-| **`agentfw`** (daemon) | **124** | config, token auth, hook parsing, provenance, mapping, verdicts, audit, router, install, replay, the judge tier + span cache, end-to-end |
+| **`llm-firewall-agent`** | **148** | event schema, facets, fingerprints, taint, actions, egress, authority, policy, engine, escalate + fallback, MCP handshake inspection, scenarios |
+| **`agentfw`** (daemon) | **138** | config, token auth, hook parsing, provenance, mapping, verdicts, audit, router, install, replay, the judge tier + span cache, the MCP collector, end-to-end |
 
-### What the agent library's 141 tests cover
+### What the agent library's 148 tests cover
 
 | Module | Tests | What it pins |
 |---|--:|---|
@@ -952,7 +991,7 @@ cargo fmt --all --check                   # clean
 | `engine` | 14 | integration, dedupe-before-scoring, benign-baseline regressions, fallback carried out on `Outcome` |
 | `scenarios` | 7 | end-to-end attack and benign sessions through the public API only |
 
-### What the daemon's 124 tests cover
+### What the daemon's 138 tests cover
 
 | Module | Tests | What it pins |
 |---|--:|---|
@@ -970,6 +1009,12 @@ cargo fmt --all --check                   # clean
 | `audit` | 5 | append-not-truncate, one JSON object per line, raw bytes for unknown events, `0600` |
 | `tests/hook_endpoint.rs` | 8 | auth gating, benign work uninterrupted, the kill chain denied, shadow mode logging without enforcing, malformed payloads never blocking, health |
 | `tests/judge_endpoint.rs` | 8 | the judge tier against a mock model: `INJECTION` → ask, `DOCUMENTATION`/prose/500/timeout/disabled → fallback, an injection in the model's answer refused, a disabled judge makes zero requests |
+| `mcp::manifest` | 5 | reorder-invariant + content-sensitive manifest hash, drift diff |
+| `mcp::store` | 3 | persistent pin round-trip, cross-server + builtin shadowing |
+| `mcp::jsonrpc` | 2 | recognizes the `tools/list` manifest, passes non-manifests through |
+| `mcp::proxy` | 1 | withholds only when enforcing + not allowed (fail-open on Unavailable) |
+| `tests/mcp_endpoint.rs` | 4 | `/mcp`: first-sight pins + allows, drift → ask, poisoned description → ask, builtin shadow → ask |
+| `tests/mcp_proxy.rs` | 1 | relay enforcement decision across verdict × enforce |
 
 **On reading a 100% pass rate.** It is the expected result, not an achievement — tests were written
 before implementation throughout, so a red test was a step in the process. The number that mattered
@@ -1004,7 +1049,8 @@ sufficient.
 | **v0.2.0** | Obfuscation resilience: dual-scan normalization pre-pass (zero-width stripping, homoglyph folding, base64 decoding). Rule-layer recall under obfuscation restored from 0% to the clean rate, 0.00% FPR on a multilingual benign control. External validation against NVIDIA garak. |
 | **v0.3 phase 08** | **Agent firewall library.** Ten modules, 130 tests: event schema, facet projection into existing detectors, winnowed Rabin–Karp fingerprinting, two-mechanism taint tracking, action classification, egress extraction, subagent authority containment, agent policy engine, integration engine, end-to-end scenarios. |
 | **v0.3 phase 09** | **The daemon.** `agentfw serve` wired into Claude Code's native hooks, `agentfw install`, `agentfw replay`. Ships in shadow mode. Verified end to end: a poisoned page followed by an exfiltration attempt denies via `deny-tainted-privilege`, while the identical run under shadow mode returns no decision and logs the would-have-been verdict. |
-| **v0.3 phase 10** *(this branch)* | **Optional local-model judge tier.** A new `escalate` policy action with a required `fallback` resolves the ambiguous band (tainted + side-effecting) by asking a local model one narrow question about the content — `INJECTION` or `DOCUMENTATION` — and may only *tighten* to `ask`, never soften. Loopback-only, off by default. Measured on a 50-sample corpus: 100% detection / 4% FP / p99 625 ms on `gemma-4-e4b`; a five-model comparison shows reasoning and larger models miss the latency budget. 8 mock-model integration tests including a rejected injection-in-answer. |
+| **v0.3 phase 10** | **Optional local-model judge tier.** A new `escalate` policy action with a required `fallback` resolves the ambiguous band (tainted + side-effecting) by asking a local model one narrow question about the content — `INJECTION` or `DOCUMENTATION` — and may only *tighten* to `ask`, never soften. Loopback-only, off by default. Measured on a 50-sample corpus: 100% detection / 4% FP / p99 625 ms on `gemma-4-e4b`; a five-model comparison shows reasoning and larger models miss the latency budget. 8 mock-model integration tests including a rejected injection-in-answer. |
+| **v0.3 phase 11a** *(this branch)* | **MCP supply-chain collector.** A transparent `agentfw mcp` stdio proxy pins each server's tool manifest and, via a new `/mcp` daemon endpoint, catches three handshake attacks deterministically: manifest drift (rug-pull), tool-name shadowing, and description poisoning. Ships in shadow mode, fails open, off by default. |
 
 ### Roadmap
 
@@ -1012,7 +1058,7 @@ sufficient.
 |---|---|
 | **09** | `agentfw serve` + Claude Code hook collector — daemon, Unix socket, audit log, approval UX. First real protection on a real machine. |
 | **10** | ✅ Local LLM judge tier for the ambiguous band (`escalate` action, tighten-only, off by default, measured). |
-| **11** | API collector (in `crates/proxy`) + MCP collector with manifest pinning and drift detection. |
+| **11** | ✅ MCP collector — manifest pinning, drift, shadowing, description poisoning (phase 11a). API collector (in `crates/proxy`) still to come (phase 11b). |
 | **12** | Agent-attack benchmark and published scorecard, using the same two-number honesty standard as the text layer. |
 
 Design records for every decision — including the ones that were measured and reversed — live in
