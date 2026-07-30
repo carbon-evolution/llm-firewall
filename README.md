@@ -742,6 +742,7 @@ if you point the judge at whatever local model you already run?"* — not an aca
 | Model | What it is | Runs under the production `max_tokens: 4` contract? | Detection | FP | Latency (p50 / mean / p99) |
 |---|---|---|---|---|---|
 | `gemma-4-e4b` | ~4B, **instruct** (non-reasoning) | ✅ **yes** | 100% (25/25) | **4.0%** (1/25) | **386 ms / 416 ms / 625 ms** |
+| `gemma-4-e4b-uncensored` | ~4B, **instruct**, **uncensored** fine-tune | ✅ **yes** | 100% (25/25) | **4.0%** (1/25) | **386 ms / 416 ms / 635 ms** |
 | `qwen3.5-9b` | 9B, **reasoning** | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 37.6 s / 38.8 s / 81.7 s\* |
 | `qwen3.5-9b-uncensored-...@q8_0` | 9B, **uncensored** fine-tune, **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* (2 `Unavailable`) | 55.8 s / 61.0 s / 130.0 s\* |
 | `claude-fable@q8_0` (Qwythos / Claude-Mythos-5, **1M MTP**) | 9B, **MTP** (multi-token prediction), **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 25.4 s / 28.0 s / 86.9 s\* |
@@ -766,6 +767,13 @@ flawless (100% / 0% / zero `Unavailable`). That edge is worthless here:
   (61 s) — but "fastest reasoning model" is still two orders of magnitude too slow for a synchronous hook.
 - **The 4B's one false positive is nearly free**, because the judge may only ever *tighten* a verdict:
   the cost is a single extra confirmation prompt, never a bypass.
+- **Uncensored changes nothing about fitness — at any size.** The uncensored *4B instruct* build is
+  **identical to the stock 4B** on every experiment (100% / 4%, same 386 ms, same single false positive,
+  4/4 non-English, 4/4 adversarial held) and runs under the real contract; the uncensored *9B* fails for
+  the same reason the stock 9B does — it reasons. Whether a model is "censored" is irrelevant to this
+  tier; **instruct-vs-reasoning and raw latency are what decide fitness.** (For a judge this is expected:
+  it *classifies* content rather than refusing it, so an uncensored model that won't refuse to look at
+  attack text is if anything a cleaner classifier.)
 
 #### Same family, 3× the size — Gemma-4 4B vs 12B, side by side
 
@@ -798,7 +806,6 @@ downloaded models were out of scope for a synchronous-hook judge and were not ru
 
 | Model | Why not evaluated |
 |---|---|
-| `gemma-4-e4b-uncensored` (4B, uncensored) | The most relevant untested one — an uncensored *small* model. Needs 9.64 GB and could not load alongside the resident 12B (memory guardrail); testable with a model swap. Expected to behave like the base 4B (instruct, answers under contract), since size and reasoning-mode — not the uncensored fine-tune — are what determined fitness above. |
 | `claude-fable@q6_k` | A lower-bit (Q6) quant of the same MTP build already measured at Q8; the reasoning-model verdict does not change with quant. |
 | `qwen3.5-9b-uncensored-...@q4_k_m` | A Q4 quant of the uncensored 9B already measured at Q8; same reasoning-model verdict. |
 | `qwen/qwen2.5-coder-14b`, `qwen3-coder-30b-a3b-instruct-mlx`, `gemma-4-12b-coder-fable5-...` | **Coder** models — tuned for code generation, not the genre-classification the judge does; and 14–30B is well past the latency budget. |
