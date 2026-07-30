@@ -298,8 +298,12 @@ async fn judge_corpus_evaluation() {
         .build()
         .expect("build client");
 
-    // Fail fast with a clear message if the endpoint is down, rather than emitting a
-    // confusion matrix full of Unavailable.
+    // Fail fast with a clear message, rather than emitting a confusion matrix full of
+    // Unavailable. Two failure modes look identical at the transport but need different
+    // fixes, so distinguish them: a network/HTTP error means the endpoint is down; an
+    // *empty* answer from a reachable endpoint means the model spent the whole 4-token
+    // budget without emitting a verdict — the signature of a reasoning model, which is
+    // structurally incompatible with this judge's tight-token contract (see E5).
     let probe = call(
         &client,
         &url,
@@ -314,6 +318,14 @@ async fn judge_corpus_evaluation() {
     )
     .await;
     if let Judgement::Unavailable(e) = &probe.judgement {
+        if probe.raw.trim().is_empty() {
+            panic!(
+                "model {model} at {url} is reachable but produced no answer within max_tokens:4 \
+                 (raw was empty). This is the signature of a reasoning/thinking model, which cannot \
+                 serve as the judge — it consumes the token budget thinking and emits no verdict. \
+                 Use a small non-reasoning instruct model (e.g. gemma-4-e4b), or disable thinking."
+            );
+        }
         panic!(
             "judge endpoint {url} / model {model} not reachable: {e}\n\
              Start LM Studio and load the model, or set AGENTFW_JUDGE_URL / AGENTFW_JUDGE_MODEL."

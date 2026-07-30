@@ -731,6 +731,30 @@ AGENTFW_JUDGE_URL=http://localhost:1234/v1/chat/completions \
   cargo test -p agentfw --test judge_corpus -- --ignored --nocapture
 ```
 
+#### Why a small model — 4B vs 9B, measured on the same corpus
+
+The obvious question is whether a bigger model would be better. We measured `qwen3.5-9b` on the same
+50-sample corpus. It is a **reasoning model**, and that turns out to be decisive:
+
+| | `gemma-4-e4b` (4B, instruct) | `qwen3.5-9b` (reasoning) |
+|---|---|---|
+| Runs under the production contract (`max_tokens: 4`)? | ✅ yes | ❌ **no** — emits an empty answer on 100% of samples (spends the whole budget thinking), so every call is `Unavailable` |
+| Detection rate | 100.0% (25/25) | 100.0% (25/25) *(only when given `max_tokens: 1024` to finish reasoning)* |
+| False-positive rate | 4.0% (1/25) | **0.0% (0/25)** — it cleared the security-policy doc the 4B flags |
+| Latency (p50 / mean) | **386 ms / 416 ms** | **37,600 ms / 38,800 ms** — ~90× over budget |
+| p99 latency | 625 ms | 81,700 ms |
+
+The 9B is *marginally* more accurate — one fewer false positive out of 25 — but that edge is worthless
+here for two reasons. First, at ~38 s per call it is ~90× over the 3 s budget and would blow Claude
+Code's 5 s hook timeout on every single call; under the real `max_tokens: 4` contract it produces **no
+answer at all**. Second, the judge may only ever *tighten* a verdict, so the 4B's single false positive
+costs exactly one extra confirmation prompt — not a bypass. `enable_thinking:false` and the `/no_think`
+soft switch did not disable reasoning in this build, so a reasoning model is **structurally
+incompatible** with this tier regardless of its accuracy.
+
+**Recommendation:** a small *non-reasoning instruct* model (~4B). "Bigger" is not better when the tier's
+whole value is a fast second opinion that fits inside a synchronous hook.
+
 **Measured limitations (numbers, not hedges).** These are documented gaps, not silent ones:
 
 - **Span truncation blind spot.** At the default `max_span_bytes: 4096`, an injection placed *after*

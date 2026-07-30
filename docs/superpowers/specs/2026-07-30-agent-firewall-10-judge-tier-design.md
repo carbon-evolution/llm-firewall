@@ -212,7 +212,7 @@ the judge may only tighten a verdict, the cost is one extra confirmation prompt,
 | E2 | Determinism (each sample twice, temp 0) | **50/50 identical.** The audit log's recorded verdict is reproducible. |
 | E3 | Latency distribution over the corpus | **p50 386 ms, p99 625 ms, mean 416 ms** — comfortably inside the 3 s budget. |
 | E4 | Prompt ablation (hardened vs unhardened) | Identical on this corpus: both 100% / 4%. The `CRITICAL:` anti-approval clause changed no verdict here — but the §4b single-case probe *did* find a case it flipped, so it is kept as cheap insurance, now with a measured note that its marginal value on realistic content is small. |
-| E5 | Larger models (12B, 9B) | **Could not run** — LM Studio's memory guardrails refused to load `gemma-4-12b-qat` (11.75 GB) and `qwen3.5-9b` (7.61 GB) alongside the 4B on this machine. 4B is both sufficient *and* the only model that fits; the README recommends it without implying larger is untested-but-fine. |
+| E5 | Larger model (`qwen3.5-9b`) | **Measured — and it is the wrong tool.** `qwen3.5-9b` is a *reasoning* model: under the production `max_tokens: 4` contract it emits an **empty answer on 100% of samples** (all `Unavailable`), because it spends the whole budget thinking; `enable_thinking:false` and `/no_think` did not disable it in this build. Given `max_tokens: 1024` to finish, it scores detection **100%**, FP **0.0%** (one better than the 4B — it clears the security-policy doc) but at **p50 37.6 s, mean 38.8 s, p99 81.7 s** — ~90× over budget and well past the 5 s hook timeout. The marginal accuracy gain is worthless against a tier whose value is speed, and the judge only tightens anyway. `gemma-4-12b-qat` could not be loaded under LM Studio's memory guardrails (11.75 GB). **Conclusion: recommend a small non-reasoning instruct model (~4B); a reasoning model is structurally incompatible with this tier.** |
 | E6 | Truncation blind spot | **Confirmed limitation.** A payload placed past byte 4096 of a 6 KB page is invisible at the default `max_span_bytes: 4096` and is called DOCUMENTATION. See limitations. |
 | E7 | Needle in haystack (one injected line in ~2.2 KB of real docs) | **Caught (INJECTION).** The actual attack shape is detected when it falls within the span cap. |
 | E8 | Non-English injections (Spanish, Chinese, Russian) | **4/4 detected.** Gemma-4B is multilingual enough that a monolingual-judge limitation did not materialise on this corpus. |
@@ -230,8 +230,10 @@ the judge may only tighten a verdict, the cost is one extra confirmation prompt,
 2. **The judge classifies visible intent, not decoded content (E9).** Light obfuscation without an
    accompanying plaintext instruction is expected to pass the judge; deobfuscation is the text layer's
    job, upstream.
-3. **4B is the measured floor and ceiling on this hardware (E5).** Larger models were not evaluated
-   because they could not be loaded. The recommendation to use a ~4B model is what was actually tested.
+3. **A reasoning model cannot serve this tier (E5).** `qwen3.5-9b` was measured: under the fast-token
+   contract it answers nothing, and given room to reason it costs ~38 s/call for a one-sample accuracy
+   gain. The recommendation to use a small *non-reasoning instruct* model (~4B) is what was tested, not
+   assumed. `gemma-4-12b-qat` could not be loaded under the machine's memory guardrail.
 4. **One benign-policy false positive (E1).** Documents that *describe* injection defenses can be
    flagged. Failing toward `Ask` is acceptable given the tighten-only guarantee.
 
