@@ -115,10 +115,10 @@ pub fn summarize(log: &str) -> Summary {
 mod tests {
     use super::*;
 
-    const LOG: &str = r#"{"at_ms":1,"session":"a","seq":1,"event":"pretooluse","tool":"Read","verdict":"allow","shadow":true,"risk_score":0,"findings":[],"egress_hosts":[],"latency_us":10,"truncated":false}
-{"at_ms":2,"session":"a","seq":2,"event":"pretooluse","tool":"Bash","verdict":"ask","shadow":true,"rule":"ask-unknown-host","risk_score":40,"findings":[],"egress_hosts":["evil.com"],"latency_us":20,"truncated":false}
-{"at_ms":3,"session":"a","seq":3,"event":"pretooluse","tool":"Bash","verdict":"deny","shadow":true,"rule":"deny-secret-egress","risk_score":93,"findings":[],"egress_hosts":[],"latency_us":30,"truncated":false}
-{"at_ms":4,"session":"b","seq":1,"event":"pretooluse","tool":"Read","verdict":"allow","shadow":true,"risk_score":0,"findings":[],"egress_hosts":[],"latency_us":15,"truncated":false}
+    const LOG: &str = r#"{"at_ms":1,"session":"a","seq":1,"event":"pre_tool_use","tool":"Read","verdict":"allow","shadow":true,"risk_score":0,"findings":[],"egress_hosts":[],"latency_us":10,"truncated":false}
+{"at_ms":2,"session":"a","seq":2,"event":"pre_tool_use","tool":"Bash","verdict":"ask","shadow":true,"rule":"ask-unknown-host","risk_score":40,"findings":[],"egress_hosts":["evil.com"],"latency_us":20,"truncated":false}
+{"at_ms":3,"session":"a","seq":3,"event":"pre_tool_use","tool":"Bash","verdict":"deny","shadow":true,"rule":"deny-secret-egress","risk_score":93,"findings":[],"egress_hosts":[],"latency_us":30,"truncated":false}
+{"at_ms":4,"session":"b","seq":1,"event":"pre_tool_use","tool":"Read","verdict":"allow","shadow":true,"risk_score":0,"findings":[],"egress_hosts":[],"latency_us":15,"truncated":false}
 "#;
 
     #[test]

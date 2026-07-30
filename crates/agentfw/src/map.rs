@@ -9,22 +9,31 @@ use llm_firewall_agent::{AgentEvent, EventKind};
 use crate::hook::{HookEvent, HookPayload};
 use crate::provenance;
 
-/// Truncate on a UTF-8 boundary at or below `max` bytes.
-fn truncate(mut s: String, max: usize) -> String {
+/// Truncate on a UTF-8 boundary at or below `max` bytes. Returns whether anything
+/// was removed, so the audit log can record it — a line claiming nothing was
+/// truncated when content was cut would mislead any later analysis of a missed
+/// detection.
+fn truncate(mut s: String, max: usize) -> (String, bool) {
     if s.len() <= max {
-        return s;
+        return (s, false);
     }
     let mut end = max;
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
     s.truncate(end);
-    s
+    (s, true)
+}
+
+/// A mapped event plus whether its content had to be truncated.
+pub struct Mapped {
+    pub event: AgentEvent,
+    pub truncated: bool,
 }
 
 /// Map one hook payload to an `AgentEvent`. `None` means "nothing to inspect" —
 /// an event kind this build does not handle.
-pub fn to_event(p: &HookPayload, seq: u64, at_ms: u64, max_bytes: usize) -> Option<AgentEvent> {
+pub fn to_event(p: &HookPayload, seq: u64, at_ms: u64, max_bytes: usize) -> Option<Mapped> {
     // Everything is keyed by session. An empty id would bucket unrelated sessions
     // into one shared taint pool — a cross-session leak, and worse than declining
     // to inspect. serde requires the field to be present but not to be non-empty.
@@ -32,6 +41,7 @@ pub fn to_event(p: &HookPayload, seq: u64, at_ms: u64, max_bytes: usize) -> Opti
         return None;
     }
 
+    let mut truncated = false;
     let kind = match p.event {
         HookEvent::PreToolUse => EventKind::ToolCall {
             tool: p.tool_name.clone().unwrap_or_default(),
@@ -40,31 +50,40 @@ pub fn to_event(p: &HookPayload, seq: u64, at_ms: u64, max_bytes: usize) -> Opti
         HookEvent::PostToolUse => {
             let tool = p.tool_name.clone().unwrap_or_default();
             let source = provenance::decide(&tool, &p.tool_input, p.cwd.as_deref());
+            let (content, cut) = truncate(p.response_text(), max_bytes);
+            truncated = cut;
             EventKind::ToolResult {
-                content: truncate(p.response_text(), max_bytes),
+                content,
                 source,
                 tool,
             }
         }
-        HookEvent::SubagentStop => EventKind::SubagentReport {
-            name: p.agent_type.clone().unwrap_or_else(|| "subagent".into()),
-            content: truncate(
+        HookEvent::SubagentStop => {
+            let (content, cut) = truncate(
                 p.last_assistant_message.clone().unwrap_or_default(),
                 max_bytes,
-            ),
-        },
+            );
+            truncated = cut;
+            EventKind::SubagentReport {
+                name: p.agent_type.clone().unwrap_or_else(|| "subagent".into()),
+                content,
+            }
+        }
         HookEvent::SessionStart => EventKind::SessionStart,
         HookEvent::SessionEnd => EventKind::SessionEnd,
         HookEvent::Other => return None,
     };
 
-    Some(AgentEvent {
-        session: p.session_id.clone(),
-        agent: "main".into(),
-        parent: None,
-        seq,
-        at_ms,
-        kind,
+    Some(Mapped {
+        event: AgentEvent {
+            session: p.session_id.clone(),
+            agent: "main".into(),
+            parent: None,
+            seq,
+            at_ms,
+            kind,
+        },
+        truncated,
     })
 }
 
@@ -84,10 +103,12 @@ mod tests {
             r#"{"session_id":"s1","hook_event_name":"PreToolUse",
                             "tool_name":"Bash","tool_input":{"command":"ls"}}"#,
         );
-        let ev = to_event(&p, 7, 1_753_000_000_000, 262_144).unwrap();
+        let m = to_event(&p, 7, 1_753_000_000_000, 262_144).unwrap();
+        let ev = m.event;
         assert_eq!(ev.session, "s1");
         assert_eq!(ev.seq, 7);
         assert_eq!(ev.at_ms, 1_753_000_000_000);
+        assert!(!m.truncated);
         match ev.kind {
             EventKind::ToolCall { tool, args } => {
                 assert_eq!(tool, "Bash");
@@ -104,8 +125,9 @@ mod tests {
                             "tool_name":"WebFetch","tool_input":{"url":"https://evil.com/a"},
                             "tool_response":"page text"}"#,
         );
-        let ev = to_event(&p, 1, 0, 262_144).unwrap();
-        match ev.kind {
+        let m = to_event(&p, 1, 0, 262_144).unwrap();
+        assert!(!m.truncated);
+        match m.event.kind {
             EventKind::ToolResult {
                 content, source, ..
             } => {
@@ -127,8 +149,9 @@ mod tests {
             r#"{"session_id":"s1","hook_event_name":"SubagentStop",
                             "agent_type":"Explore","last_assistant_message":"done"}"#,
         );
-        let ev = to_event(&p, 1, 0, 262_144).unwrap();
-        match ev.kind {
+        let m = to_event(&p, 1, 0, 262_144).unwrap();
+        assert!(!m.truncated);
+        match m.event.kind {
             EventKind::SubagentReport { name, content } => {
                 assert_eq!(name, "Explore");
                 assert_eq!(content, "done");
@@ -141,12 +164,12 @@ mod tests {
     fn lifecycle_events_map_across() {
         let s = payload(r#"{"session_id":"s","hook_event_name":"SessionStart"}"#);
         assert!(matches!(
-            to_event(&s, 1, 0, 100).unwrap().kind,
+            to_event(&s, 1, 0, 100).unwrap().event.kind,
             EventKind::SessionStart
         ));
         let e = payload(r#"{"session_id":"s","hook_event_name":"SessionEnd"}"#);
         assert!(matches!(
-            to_event(&e, 1, 0, 100).unwrap().kind,
+            to_event(&e, 1, 0, 100).unwrap().event.kind,
             EventKind::SessionEnd
         ));
     }
@@ -175,11 +198,21 @@ mod tests {
         let p = payload(&format!(
             r#"{{"session_id":"s","hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":"{big}"}}"#
         ));
-        let ev = to_event(&p, 1, 0, 1000).unwrap();
-        match ev.kind {
+        let m = to_event(&p, 1, 0, 1000).unwrap();
+        assert!(m.truncated);
+        match m.event.kind {
             EventKind::ToolResult { content, .. } => assert_eq!(content.len(), 1000),
             other => panic!("expected ToolResult, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn small_content_is_not_reported_as_truncated() {
+        let p = payload(
+            r#"{"session_id":"s","hook_event_name":"PostToolUse","tool_response":"short"}"#,
+        );
+        let m = to_event(&p, 1, 0, 1000).unwrap();
+        assert!(!m.truncated);
     }
 
     #[test]
@@ -188,8 +221,9 @@ mod tests {
         let p = payload(
             r#"{"session_id":"s","hook_event_name":"PostToolUse","tool_response":"ααααα"}"#,
         );
-        let ev = to_event(&p, 1, 0, 5).unwrap();
-        match ev.kind {
+        let m = to_event(&p, 1, 0, 5).unwrap();
+        assert!(m.truncated);
+        match m.event.kind {
             EventKind::ToolResult { content, .. } => assert!(content.len() <= 5),
             other => panic!("expected ToolResult, got {other:?}"),
         }
@@ -201,17 +235,18 @@ mod tests {
         // produce invalid UTF-8.
         let s = "ab\u{1F600}cd".to_string(); // 😀 is 4 bytes, at byte offset 2..6
         for max in [0usize, 1, 2, 3, 4, 5, 6, s.len()] {
-            let out = truncate(s.clone(), max);
+            let (out, cut) = truncate(s.clone(), max);
             assert!(out.len() <= max);
             assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+            assert_eq!(cut, max < s.len());
         }
     }
 
     #[test]
     fn truncation_at_max_zero_one_and_full_length_never_panics() {
         let s = "αβγ".to_string();
-        assert_eq!(truncate(s.clone(), 0), "");
-        assert_eq!(truncate(s.clone(), 1), ""); // 'α' is 2 bytes; boundary walks back to 0
-        assert_eq!(truncate(s.clone(), s.len()), s);
+        assert_eq!(truncate(s.clone(), 0), (String::new(), true));
+        assert_eq!(truncate(s.clone(), 1), (String::new(), true)); // 'α' is 2 bytes; boundary walks back to 0
+        assert_eq!(truncate(s.clone(), s.len()), (s.clone(), false));
     }
 }

@@ -20,6 +20,22 @@ pub enum HookEvent {
     Other,
 }
 
+impl HookEvent {
+    /// Stable snake_case name for the audit log. Deliberately explicit rather than
+    /// derived from `Debug`: the audit log is a forensic record and its schema must
+    /// not change silently when a Rust variant is renamed.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookEvent::PreToolUse => "pre_tool_use",
+            HookEvent::PostToolUse => "post_tool_use",
+            HookEvent::SubagentStop => "subagent_stop",
+            HookEvent::SessionStart => "session_start",
+            HookEvent::SessionEnd => "session_end",
+            HookEvent::Other => "unknown",
+        }
+    }
+}
+
 /// One hook invocation. Field names follow Claude Code's documented contract;
 /// everything except `session_id` is optional so a partial or future payload
 /// still parses.
@@ -173,6 +189,18 @@ mod tests {
         let j = r#"{"session_id":"","hook_event_name":"PreToolUse"}"#;
         let h: HookPayload = serde_json::from_str(j).unwrap();
         assert_eq!(h.session_id, "");
+    }
+
+    #[test]
+    fn as_str_is_pinned_and_snake_case_for_every_variant() {
+        // This is the on-disk audit schema. A future rename of the Rust variant
+        // must not silently change it, so pin each mapping explicitly here.
+        assert_eq!(HookEvent::PreToolUse.as_str(), "pre_tool_use");
+        assert_eq!(HookEvent::PostToolUse.as_str(), "post_tool_use");
+        assert_eq!(HookEvent::SubagentStop.as_str(), "subagent_stop");
+        assert_eq!(HookEvent::SessionStart.as_str(), "session_start");
+        assert_eq!(HookEvent::SessionEnd.as_str(), "session_end");
+        assert_eq!(HookEvent::Other.as_str(), "unknown");
     }
 
     #[test]

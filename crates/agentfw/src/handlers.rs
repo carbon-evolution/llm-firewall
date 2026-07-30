@@ -11,13 +11,25 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use llm_firewall_agent::AgentFirewall;
+use llm_firewall_agent::{AgentFirewall, Verdict};
 
 use crate::audit::{AuditFinding, AuditLine, AuditSink, AuditTaint};
 use crate::config::Config;
 use crate::decision;
 use crate::hook::{HookEvent, HookPayload};
 use crate::map;
+
+/// Stable audit-log string for a verdict. Deliberately explicit rather than
+/// `Debug`-derived, for the same reason as `HookEvent::as_str`: the audit log is a
+/// forensic record and must not change shape when a variant is renamed.
+/// `replay::summarize` matches on these exact strings.
+fn verdict_str(v: Verdict) -> &'static str {
+    match v {
+        Verdict::Allow => "allow",
+        Verdict::Ask => "ask",
+        Verdict::Deny => "deny",
+    }
+}
 
 /// Per-session monotonic sequence numbers.
 #[derive(Default)]
@@ -107,7 +119,7 @@ pub async fn hook(
     // to key taint by (see `map::to_event`): record it with its raw bytes (a
     // re-serialized `Unknown` would be lossy) and proceed.
     let seq = st.sessions.next(&payload.session_id);
-    let Some(event) = map::to_event(&payload, seq, now_ms(), st.config.max_record_bytes) else {
+    let Some(mapped) = map::to_event(&payload, seq, now_ms(), st.config.max_record_bytes) else {
         tracing::warn!(session = %payload.session_id, "unrecognized hook event");
         let _ = st.audit.write(&AuditLine {
             at_ms: now_ms(),
@@ -128,6 +140,7 @@ pub async fn hook(
         });
         return (StatusCode::OK, Json(serde_json::json!({})));
     };
+    let event = mapped.event;
 
     let is_pre = payload.event == HookEvent::PreToolUse;
     if payload.event == HookEvent::SessionEnd {
@@ -153,9 +166,9 @@ pub async fn hook(
         at_ms: event.at_ms,
         session: payload.session_id.clone(),
         seq,
-        event: format!("{:?}", payload.event).to_lowercase(),
+        event: payload.event.as_str().to_string(),
         tool: payload.tool_name.clone(),
-        verdict: format!("{:?}", d.would_have_been).to_lowercase(),
+        verdict: verdict_str(d.would_have_been).to_string(),
         shadow: d.shadow,
         rule: outcome.rule.clone(),
         risk_score: outcome.risk_score,
@@ -175,7 +188,7 @@ pub async fn hook(
         }),
         egress_hosts: outcome.egress_hosts.clone(),
         latency_us: started.elapsed().as_micros(),
-        truncated: false,
+        truncated: mapped.truncated,
         raw: None,
     });
 
