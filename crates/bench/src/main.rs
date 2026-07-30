@@ -24,9 +24,12 @@ use crate::rivals::SubprocessGuard;
 #[derive(Parser)]
 #[command(name = "llm-firewall-bench")]
 struct Cli {
-    /// One or more dataset .jsonl files.
-    #[arg(long, required = true, num_args = 1..)]
+    /// One or more dataset .jsonl files (text benchmark).
+    #[arg(long, num_args = 1..)]
     dataset: Vec<String>,
+    /// Agent-attack corpus .jsonl. Runs the agent scorecard instead of the text one.
+    #[arg(long)]
+    agent: Option<String>,
     /// Risk-score threshold for CoreGuard.
     #[arg(long, default_value_t = 50)]
     threshold: u8,
@@ -169,8 +172,69 @@ fn parse_rival(spec: &str) -> Option<SubprocessGuard> {
     })
 }
 
+/// Run the agent-attack corpus and print its scorecard.
+fn run_agent_benchmark(corpus: &str) -> anyhow::Result<()> {
+    let sessions = agent_dataset::load(corpus)?;
+    let eval = agent_eval::evaluate(&sessions);
+    let n_attack = sessions.iter().filter(|s| s.is_attack).count();
+    let n_benign = sessions.len() - n_attack;
+
+    println!("# Agent-attack benchmark\n");
+    println!(
+        "Corpus: {} attack + {} benign = {} sessions. Hand-authored — measures coverage of \
+         known attack shapes, not generalization to novel attacks.\n",
+        n_attack,
+        n_benign,
+        sessions.len()
+    );
+    println!("| Metric | Result |");
+    println!("|---|---|");
+    println!(
+        "| **Detection rate** | {:.1}% ({}/{}) |",
+        eval.detection_rate() * 100.0,
+        eval.confusion.tp,
+        eval.confusion.tp + eval.confusion.fn_
+    );
+    println!(
+        "| **False-positive rate** | {:.1}% ({}/{}) |",
+        eval.false_positive_rate() * 100.0,
+        eval.confusion.fp,
+        eval.confusion.fp + eval.confusion.tn
+    );
+
+    println!("\n## Detection by category\n");
+    println!("| Category | Detected |");
+    println!("|---|---|");
+    for (cat, (hit, total)) in &eval.per_category {
+        println!("| {cat} | {hit}/{total} |");
+    }
+
+    if !eval.false_positives.is_empty() {
+        println!(
+            "\n**False positives** (benign sessions flagged): {:?}",
+            eval.false_positives
+        );
+    }
+    if !eval.misses.is_empty() {
+        println!(
+            "\n**Misses** (attack sessions not flagged): {:?}",
+            eval.misses
+        );
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Agent-attack benchmark: a separate corpus + scorecard from the text one.
+    if let Some(corpus) = cli.agent.as_deref() {
+        return run_agent_benchmark(corpus);
+    }
+    anyhow::ensure!(
+        !cli.dataset.is_empty(),
+        "provide --dataset <file...> (text benchmark) or --agent <corpus> (agent benchmark)"
+    );
 
     // Merge all datasets.
     let mut data = Vec::new();
