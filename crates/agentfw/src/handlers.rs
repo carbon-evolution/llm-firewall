@@ -28,6 +28,12 @@ fn verdict_str(v: Verdict) -> &'static str {
         Verdict::Allow => "allow",
         Verdict::Ask => "ask",
         Verdict::Deny => "deny",
+        // Not expected to reach the audit log: the handler resolves `Escalate`
+        // into a real verdict before `decision::decide` (and this) ever see it.
+        // Named explicitly here rather than a catch-all so a future variant added
+        // to `Verdict` fails to compile here too, instead of silently logging
+        // under someone else's label.
+        Verdict::Escalate => "escalate",
     }
 }
 

@@ -21,6 +21,10 @@ pub enum Verdict {
     /// Pause and put the decision to the human.
     Ask,
     Deny,
+    /// The rule is not confident. Ask the optional local judge; if none is
+    /// available, apply the rule's declared `fallback`. Never appears in a final
+    /// decision handed to a collector — it is always resolved first.
+    Escalate,
 }
 
 /// Which untrusted source classes a rule cares about.
@@ -94,14 +98,76 @@ pub struct AgentCondition {
     pub touches_sensitive_path: Option<bool>,
 }
 
+/// Wire form of a rule, before validation. Only `AgentRule` is used elsewhere.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct RawAgentRule {
+    name: String,
+    when: AgentCondition,
+    action: Verdict,
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    fallback: Option<Verdict>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "RawAgentRule")]
 pub struct AgentRule {
     pub name: String,
     pub when: AgentCondition,
     pub action: Verdict,
-    #[serde(default)]
     pub message: Option<String>,
+    /// Verdict to apply when `action` is `Escalate` and no judge is available.
+    /// Required for `Escalate`, forbidden otherwise — enforced at parse time.
+    pub fallback: Option<Verdict>,
+}
+
+impl TryFrom<RawAgentRule> for AgentRule {
+    type Error = String;
+
+    fn try_from(r: RawAgentRule) -> Result<Self, Self::Error> {
+        match (r.action, r.fallback) {
+            (Verdict::Escalate, None) => {
+                return Err(format!(
+                    "rule {:?}: action 'escalate' requires a 'fallback' of allow or ask. \
+                     The judge is optional and off by default, so the fallback is the \
+                     normal path and must be stated explicitly.",
+                    r.name
+                ))
+            }
+            (Verdict::Escalate, Some(Verdict::Escalate)) => {
+                return Err(format!(
+                    "rule {:?}: 'fallback' cannot be 'escalate'",
+                    r.name
+                ))
+            }
+            (Verdict::Escalate, Some(Verdict::Deny)) => {
+                // Permitted but pointless: a rule confident enough to deny should
+                // just deny. Rejected to keep intent unambiguous.
+                return Err(format!(
+                    "rule {:?}: 'fallback' of 'deny' is not allowed — a rule confident \
+                     enough to deny should use 'action: deny' directly",
+                    r.name
+                ));
+            }
+            (Verdict::Escalate, Some(Verdict::Allow | Verdict::Ask)) => {}
+            (_, Some(_)) => {
+                return Err(format!(
+                    "rule {:?}: 'fallback' is only valid with 'action: escalate'",
+                    r.name
+                ))
+            }
+            _ => {}
+        }
+        Ok(AgentRule {
+            name: r.name,
+            when: r.when,
+            action: r.action,
+            message: r.message,
+            fallback: r.fallback,
+        })
+    }
 }
 
 fn default_verdict() -> Verdict {
@@ -125,11 +191,21 @@ pub struct AgentDecision {
     pub verdict: Verdict,
     pub rule: Option<String>,
     pub message: Option<String>,
+    /// Set only when `verdict` is `Escalate`.
+    pub fallback: Option<Verdict>,
 }
 
 impl AgentPolicySet {
     pub fn from_yaml(s: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(s)
+        use serde::de::Error as _;
+        let p: AgentPolicySet = serde_yaml::from_str(s)?;
+        if p.default == Verdict::Escalate {
+            // Produce a real serde error rather than a panic or a silent fix.
+            return Err(serde_yaml::Error::custom(
+                "policy 'default' cannot be 'escalate': there is no rule to take a fallback from",
+            ));
+        }
+        Ok(p)
     }
 
     /// First matching rule wins; otherwise the default verdict.
@@ -140,6 +216,7 @@ impl AgentPolicySet {
                     verdict: rule.action,
                     rule: Some(rule.name.clone()),
                     message: rule.message.clone(),
+                    fallback: rule.fallback,
                 };
             }
         }
@@ -147,6 +224,7 @@ impl AgentPolicySet {
             verdict: self.default,
             rule: None,
             message: None,
+            fallback: None,
         }
     }
 
@@ -412,5 +490,92 @@ default: allow
             msg.contains("detecter") || msg.contains("unknown field"),
             "expected the error to name the bad field, got: {msg}"
         );
+    }
+
+    // --- phase 10: the escalate action ---
+
+    const ESCALATE_YAML: &str = r#"
+agent_policies:
+  - name: escalate-tainted-side-effect
+    when: { taint: [network], min_action_class: side_effecting }
+    action: escalate
+    fallback: allow
+    message: "uses fetched content"
+default: allow
+"#;
+
+    #[test]
+    fn an_escalate_rule_parses_and_carries_its_fallback() {
+        let p = AgentPolicySet::from_yaml(ESCALATE_YAML).expect("should parse");
+        assert_eq!(p.agent_policies[0].action, Verdict::Escalate);
+        assert_eq!(p.agent_policies[0].fallback, Some(Verdict::Allow));
+    }
+
+    #[test]
+    fn an_escalate_rule_without_a_fallback_is_a_parse_error() {
+        // The judge is OFF by default, so the fallback path is the NORMAL path.
+        // A security tool must not have a hidden default for "the thing I depend
+        // on is absent".
+        let yaml = "agent_policies:\n  - name: r\n    when: { taint: [network] }\n    action: escalate\ndefault: allow\n";
+        let err = AgentPolicySet::from_yaml(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("fallback"),
+            "error should name the missing field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_fallback_on_a_non_escalate_rule_is_a_parse_error() {
+        // Silently ignoring it would let an operator believe a deny had a fallback.
+        let yaml = "agent_policies:\n  - name: r\n    when: { taint: [network] }\n    action: deny\n    fallback: allow\ndefault: allow\n";
+        let err = AgentPolicySet::from_yaml(yaml).unwrap_err().to_string();
+        assert!(err.contains("fallback"), "got: {err}");
+    }
+
+    #[test]
+    fn escalate_is_not_a_valid_fallback() {
+        // A fallback that escalates again would loop.
+        let yaml = "agent_policies:\n  - name: r\n    when: { taint: [network] }\n    action: escalate\n    fallback: escalate\ndefault: allow\n";
+        assert!(AgentPolicySet::from_yaml(yaml).is_err());
+    }
+
+    #[test]
+    fn escalate_is_not_a_valid_policy_default() {
+        // There is no rule to take a fallback from, so this cannot be resolved.
+        let yaml = "agent_policies: []\ndefault: escalate\n";
+        assert!(AgentPolicySet::from_yaml(yaml).is_err());
+    }
+
+    #[test]
+    fn evaluate_returns_the_fallback_alongside_an_escalate_verdict() {
+        let p = AgentPolicySet::from_yaml(ESCALATE_YAML).unwrap();
+        let mut s = signals();
+        s.action_class = Some(ActionClass::SideEffecting);
+        s.taint = Some(TaintMark {
+            source: Provenance::Network {
+                host: "e.com".into(),
+            },
+            seq: 1,
+        });
+        let d = p.evaluate(&s);
+        assert_eq!(d.verdict, Verdict::Escalate);
+        assert_eq!(d.fallback, Some(Verdict::Allow));
+        assert_eq!(d.rule.as_deref(), Some("escalate-tainted-side-effect"));
+    }
+
+    #[test]
+    fn a_non_escalate_decision_carries_no_fallback() {
+        let p = AgentPolicySet::from_yaml(YAML).unwrap();
+        let mut s = signals();
+        s.subagent_escalation = true;
+        let d = p.evaluate(&s);
+        assert_eq!(d.verdict, Verdict::Deny);
+        assert_eq!(d.fallback, None);
+    }
+
+    #[test]
+    fn the_shipped_default_policy_still_parses_with_escalate_support() {
+        let yaml = include_str!("../policies/agent-default.yaml");
+        AgentPolicySet::from_yaml(yaml).expect("shipped policy must parse");
     }
 }

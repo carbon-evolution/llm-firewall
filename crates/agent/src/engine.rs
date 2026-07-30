@@ -182,6 +182,7 @@ impl AgentFirewall {
             verdict,
             rule,
             message,
+            fallback: _,
         } = self.policy.evaluate(&signals);
 
         Outcome {

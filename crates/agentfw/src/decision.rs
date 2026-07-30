@@ -69,6 +69,11 @@ pub fn decide(
         Verdict::Allow => ("defer", None),
         Verdict::Ask => ("ask", reason),
         Verdict::Deny => ("deny", reason),
+        // The handler is responsible for resolving `Escalate` (via the judge, or
+        // its rule's `fallback`) before this function ever sees it. If it somehow
+        // arrives here anyway, the only safe behaviour is no opinion — never widen
+        // it into `deny` or narrow it into `allow` on its behalf.
+        Verdict::Escalate => ("defer", None),
     };
 
     Decision {
