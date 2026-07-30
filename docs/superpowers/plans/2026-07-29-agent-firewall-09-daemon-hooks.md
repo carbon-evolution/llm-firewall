@@ -51,9 +51,23 @@ pins this with a test, because it is the regression this phase exists to avoid.
 
 ---
 
-### Task 1: Verify the failure behaviour of an unreachable HTTP hook — GATE
+### Task 1: Verify the failure behaviour of an unreachable HTTP hook — GATE — ✅ RESOLVED 2026-07-30
 
-**This task can invalidate the transport decision. Do it before building on it.**
+**Measured: an unreachable HTTP hook FAILS OPEN. The transport decision stands; build Task 8 as designed.**
+
+The tool call proceeded and completed normally, at `real 7.39s` against a 5-second hook timeout plus
+ordinary startup — so the timeout was honoured and then execution continued. No block, no hang.
+
+**One consequence to carry into Tasks 10 and 12:** a stopped daemon costs the full hook timeout on
+*every* tool call. Nothing breaks, but it reads as "Claude Code is slow" rather than "agentfw isn't
+running". So `install`'s output must say so explicitly (Task 10), and the README should too (Task 12).
+The timeout stays at 5 s rather than being shortened, because phase 10's judge tier needs a 3 s
+budget; the daemon-down penalty buys that headroom and is only paid when something is already wrong.
+
+Full method and result recorded in the design spec §7. The original task text is retained below for
+provenance.
+
+---
 
 Spec §7 records an open empirical question: what Claude Code does when a `type: "http"` hook's endpoint refuses connection or times out. The documented exit-code semantics describe `command` hooks. If an unreachable HTTP hook blocks the agent loop or fails closed, the whole transport choice must change back to a command shim.
 

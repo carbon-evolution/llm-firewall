@@ -202,12 +202,37 @@ Every `PreToolUse` in every session blocks on this path.
 | Hook `timeout` (config) | 5 s | Claude Code proceeds |
 | Daemon down / 401 / 5xx / panic | — | **proceed**, warn loudly |
 
-**An empirical question to settle in the first implementation task:** what Claude Code actually does
-when an `type: "http"` hook's endpoint refuses connection or times out. The documented exit-code
-semantics describe `command` hooks. If an unreachable HTTP hook blocks or fails closed, B1 must be
-revisited and the command-shim transport reinstated — the shim controls its own failure behaviour
-precisely, which is the one advantage it has. **This is a gate on the transport decision, not a
-detail.**
+### Measured: an unreachable HTTP hook fails open
+
+The open question here — what Claude Code does when a `type: "http"` hook's endpoint is unreachable —
+**was measured on 2026-07-30 and the answer confirms the transport decision (B1).**
+
+Method: a one-shot non-interactive run with the hook pointed at a dead port, using `--settings` with
+inline JSON so nothing on disk was modified:
+
+```bash
+time claude \
+  --settings '{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"http","url":"http://127.0.0.1:59999/hook","timeout":5}]}]}}' \
+  --debug hooks -p "Use the Bash tool to list files in this directory, then stop." --max-turns 2
+```
+
+Result: **the tool call proceeded and completed normally.** `real 7.39s` against a 5-second hook
+timeout plus ordinary startup and model latency — so the configured timeout was honoured and then
+execution continued. It did not block, and it did not hang.
+
+**Consequence B1 survives, with one cost worth stating plainly:** when the daemon is *down*, every
+tool call pays the full hook timeout before proceeding. Nothing breaks, but a 5-second penalty per
+tool call is genuinely irritating and would look like Claude Code being slow rather than like
+`agentfw` not running. Three mitigations, all cheap:
+
+1. The `install` output must say explicitly that a stopped daemon costs the timeout per tool call, so
+   the symptom is recognizable.
+2. `SessionStart` is a natural place to probe `/health` and warn loudly when the daemon is
+   unreachable — the operator learns immediately rather than inferring it from sluggishness.
+3. The timeout stays at 5 s rather than being shortened, because phase 10's local-model judge tier
+   has a 3 s budget of its own. Shortening it now would time out legitimate slow judgments later. The
+   daemon-down penalty is the price of that headroom, and it is paid only when something is already
+   wrong.
 
 ---
 
