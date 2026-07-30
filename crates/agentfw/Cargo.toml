@@ -1,0 +1,35 @@
+[package]
+name = "agentfw"
+version = "0.3.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Agent firewall daemon: inspects Claude Code tool calls via native hooks."
+
+[lib]
+name = "agentfw"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agentfw"
+path = "src/main.rs"
+
+[dependencies]
+llm-firewall-agent = { path = "../agent", version = "0.2.0" }
+llm-firewall-core = { path = "../core", version = "0.2.0" }
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+serde_json.workspace = true
+serde_yaml = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+anyhow = "1"
+rand = "0.8"
+subtle = "2"
+dirs = "5"
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
