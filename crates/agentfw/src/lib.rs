@@ -10,6 +10,7 @@ pub mod decision;
 pub mod hook;
 pub mod map;
 pub mod provenance;
+pub mod replay;
 pub mod token;
 
 pub use config::Config;
