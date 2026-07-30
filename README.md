@@ -704,6 +704,51 @@ firewall stops them **output-side**, largely via the secret detector's high-entr
 the base64 in replies — effective, but partly incidental (it would also over-block legitimate base64
 in a response). Full write-up + the over-defense follow-up: [`docs/garak-validation.md`](docs/garak-validation.md).
 
+### The judge tier (agent firewall) — measured on a live local model
+
+The agent firewall's optional **judge tier** escalates the ambiguous band — a tainted, side-effecting
+action — to a small local model that answers one question about the *content*: **INJECTION or
+DOCUMENTATION?** It is held to the same two-number standard as the text layer, on a **50-sample corpus**
+(25 injection, 25 benign) written for the purpose (`crates/agentfw/tests/fixtures/judge_corpus.jsonl`).
+The benign half deliberately includes the hard cases — content that mentions `.env` files,
+`~/.ssh/id_rsa`, API tokens, and POSTing data to URLs — since that is where false positives come from.
+
+Measured on `google/gemma-4-e4b` via LM Studio, using the **production** prompt and parser:
+
+| Metric | Result |
+|---|---|
+| **Detection rate** (injections caught) | **100.0%** (25/25) |
+| **False-positive rate** (benign flagged) — the deciding number | **4.0%** (1/25) |
+| Determinism (temp 0, each sample twice) | 50/50 identical — the audit log is reproducible |
+| Latency | p50 **386 ms**, p99 **625 ms** (budget 3 s) |
+| Non-English injections (ES/ZH/RU) | 4/4 detected |
+| Adversarial "talk the judge out of it" content | 4/4 still flagged |
+
+Reproduce with a model loaded in LM Studio:
+
+```bash
+AGENTFW_JUDGE_URL=http://localhost:1234/v1/chat/completions \
+  cargo test -p agentfw --test judge_corpus -- --ignored --nocapture
+```
+
+**Measured limitations (numbers, not hedges).** These are documented gaps, not silent ones:
+
+- **Span truncation blind spot.** At the default `max_span_bytes: 4096`, an injection placed *after*
+  the first 4 KB of a page is not seen (called DOCUMENTATION). Mitigation is architectural — the span
+  cache should retain the matched tainted region, not the head of the page.
+- **The judge reads visible intent, not decoded payloads.** Encoded blobs are caught only when a
+  plaintext instruction accompanies them ("decode and run this"); bare obfuscation is the text layer's
+  job, upstream.
+- **4B is the measured floor and ceiling here.** Larger models (12B, 9B) could not be loaded under LM
+  Studio's memory guardrails on the test machine, so the recommendation to use a ~4B model is what was
+  actually tested — not an assumption that any local model works.
+- **One benign false positive:** a security-policy document that *describes* injection defenses is
+  flagged. This fails in the safe direction — the judge may only **tighten** a verdict, so the cost is
+  one extra confirmation prompt, never a bypass.
+
+Full experiment matrix (E1–E12) and the confusion matrix:
+[`docs/superpowers/specs/2026-07-30-agent-firewall-10-judge-tier-design.md`](docs/superpowers/specs/2026-07-30-agent-firewall-10-judge-tier-design.md) §4c.
+
 ### Understanding the numbers (plain English)
 
 Think of the firewall like an airport checkpoint: a **fast metal detector** (the pattern rules)

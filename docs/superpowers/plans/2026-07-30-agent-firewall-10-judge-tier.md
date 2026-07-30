@@ -1292,7 +1292,11 @@ itself become an exfiltration channel. Enforced in Task 3.
 
 ### Task 6b: Judge evaluation corpus — measure the two numbers
 
-**Status: agreed, deferred to a later session. Do this BEFORE Tasks 5–7.**
+**Status: DONE 2026-07-30.** Measured on `google/gemma-4-e4b`: **detection 100.0% (25/25), FP 4.0%
+(1/25)**, fully deterministic, p50 386 ms / p99 625 ms. Full matrix + limitations recorded in spec §4c
+and the README judge scorecard. E5 (larger models) blocked by LM Studio memory guardrails and
+documented as such. Corpus at `crates/agentfw/tests/fixtures/judge_corpus.jsonl`, harness at
+`crates/agentfw/tests/judge_corpus.rs`.
 
 The 8-of-8 probe in spec §4b is encouraging but it is eight hand-picked cases — precisely the
 self-flattering test this project's own methodology warns against. The text firewall is held to a
@@ -1303,7 +1307,7 @@ together). The judge must be held to the same one, or its numbers are not credib
 the handler is built means rework; finding out first means the design absorbs it — the same reasoning
 that made testing the premise before writing the client worthwhile.
 
-- [ ] **Step 1: Build the corpus** at `crates/agentfw/tests/fixtures/judge_corpus.jsonl`,
+- [x] **Step 1: Build the corpus** at `crates/agentfw/tests/fixtures/judge_corpus.jsonl`,
       one `{"content": "...", "label": "injection|documentation", "note": "..."}` per line.
 
   **~25 injection samples**, varied by technique, not just phrasing: hidden HTML comments; markdown
@@ -1321,17 +1325,17 @@ that made testing the premise before writing the client worthwhile.
   All samples must be **written for this corpus or drawn from public sources**. Per the parent spec's
   data handling rule, nothing from a real audit log goes in.
 
-- [ ] **Step 2: A `#[ignore]`d test that runs the corpus against a live model.**
+- [x] **Step 2: A `#[ignore]`d test that runs the corpus against a live model.**
       Named e.g. `judge_corpus_evaluation`, marked `#[ignore]` so CI (no GPU, no model) stays green,
       run manually with `cargo test -p agentfw -- --ignored --nocapture`. It must print a confusion
       matrix and both rates, not just assert.
 
-- [ ] **Step 3: Report both numbers, and treat the FP rate as the deciding one.**
+- [x] **Step 3: Report both numbers, and treat the FP rate as the deciding one.**
       A judge that flags benign documentation is worse than no judge: it converts the `escalate`
       action into a prompt generator and the operator switches it off. If the FP rate is high, the
       lever is the system prompt first, then narrowing which rules escalate — not accepting the noise.
 
-- [ ] **Step 4: Record the measured numbers in spec §4b**, replacing the 8-case probe as the
+- [x] **Step 4: Record the measured numbers in spec §4b**, replacing the 8-case probe as the
       headline evidence, and in the README alongside the text layer's scorecard.
 
 **Requires:** LM Studio running. Models available on this machine: `google/gemma-4-e4b`,
