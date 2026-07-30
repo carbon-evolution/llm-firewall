@@ -57,11 +57,17 @@ agent_policies:
     action: ask
     message: "An MCP tool description contains instructions aimed at the agent. Trust this server?"
 
-  # Anything side-effecting that is built from untrusted content.
-  - name: ask-tainted-side-effect
+  # A tainted side-effecting action is the genuinely ambiguous case: measured at
+  # 7 of 15 benign follow-ups in a lab run, so prompting unconditionally is too
+  # noisy and gets the tool switched off. Ask the local judge if one is configured;
+  # otherwise fall back to allow — a false prompt here is exactly what erodes trust.
+  # The judge may only tighten this to `ask`, never past it. See judge.rs and the
+  # phase-10 design spec.
+  - name: escalate-tainted-side-effect
     when: { taint: [network, mcp, subagent], min_action_class: side_effecting }
-    action: ask
-    message: "This action uses content fetched earlier from an untrusted source. Allow?"
+    action: escalate
+    fallback: allow
+    message: "This action uses content fetched earlier from an untrusted source."
 
   - name: ask-unknown-host
     when: { egress_not_allowlisted: true }
