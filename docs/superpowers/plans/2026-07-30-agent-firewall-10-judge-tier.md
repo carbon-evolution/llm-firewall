@@ -746,10 +746,14 @@ pub struct Judge {
 
 impl Judge {
     pub fn new(cfg: JudgeCfg) -> Self {
+        // NOTE: do NOT use `.unwrap_or_default()` here. `reqwest::Client::default()`
+        // is `builder().build().expect(...)` internally, so it panics on the very
+        // failure that makes `build()` return Err — it looks like it avoids a panic
+        // while doing nothing of the kind. Hold an Option and degrade to Unavailable.
         let http = reqwest::Client::builder()
             .timeout(Duration::from_millis(cfg.timeout_ms))
             .build()
-            .unwrap_or_default();
+            .ok();
         Self { cfg, http }
     }
 
@@ -939,9 +943,17 @@ impl SpanCache {
     pub fn put(&self, session: &str, seq: u64, content: &str) {
         let Ok(mut m) = self.sessions.lock() else { return };
         let e = m.entry(session.to_string()).or_default();
-        e.by_seq
-            .insert(seq, clamp(content, self.max_bytes).to_string());
-        e.order.push_back(seq);
+        // Only record eviction order for a genuinely NEW seq. Pushing
+        // unconditionally lets a re-put grow `order` with duplicates, and at
+        // capacity an entry can then be evicted by its own stale queue entries —
+        // measured: three puts of seq 1 at cap 2, then seq 2, and seq 1 vanished.
+        let is_new = e
+            .by_seq
+            .insert(seq, clamp(content, self.max_bytes).to_string())
+            .is_none();
+        if is_new {
+            e.order.push_back(seq);
+        }
         while e.order.len() > self.cap {
             if let Some(old) = e.order.pop_front() {
                 e.by_seq.remove(&old);
