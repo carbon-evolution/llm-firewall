@@ -478,11 +478,13 @@ Add `#[serde(default)] pub judge: JudgeCfg,` to `Config`, include it in `Config:
                  allowed to outlast it would make the hook itself time out. Got {}",
                 self.judge.timeout_ms
             );
-            let host_ok = ["http://localhost", "http://127.0.0.1", "http://[::1]"]
-                .iter()
-                .any(|p| self.judge.url.starts_with(p));
+            // NOTE: a `starts_with` prefix check here is EXPLOITABLE —
+            // `http://localhost.evil.com/...` starts with `http://localhost`. Parse the
+            // authority component and match it exactly. See `url_host` / `is_loopback_url`
+            // in config.rs, which strip scheme, userinfo, port and IPv6 brackets and then
+            // compare case-insensitively against localhost / 127.0.0.1 / ::1.
             anyhow::ensure!(
-                host_ok,
+                is_loopback_url(&self.judge.url),
                 "judge.url must be a loopback address; got {:?}. The judge prompt contains tool \
                  arguments and untrusted fetched content — sending that off-host would make this \
                  firewall an exfiltration channel.",
