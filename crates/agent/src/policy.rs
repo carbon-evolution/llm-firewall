@@ -512,6 +512,23 @@ default: allow
     }
 
     #[test]
+    fn a_fallback_of_deny_is_a_parse_error() {
+        // Everything in this project fails OPEN: an unreachable daemon proceeds, a
+        // malformed payload proceeds, a poisoned mutex proceeds. `fallback: deny`
+        // would be the one path where a MISSING optional dependency produces a hard
+        // block — the tool getting more restrictive the less of it you have
+        // installed. That inverts the failure posture, so reject it at parse time
+        // rather than leave it as a footgun. A rule confident enough to deny should
+        // say `action: deny`.
+        let yaml = "agent_policies:\n  - name: r\n    when: { taint: [network] }\n    action: escalate\n    fallback: deny\ndefault: allow\n";
+        let err = AgentPolicySet::from_yaml(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("deny"),
+            "the error should explain why deny is not a valid fallback, got: {err}"
+        );
+    }
+
+    #[test]
     fn an_escalate_rule_without_a_fallback_is_a_parse_error() {
         // The judge is OFF by default, so the fallback path is the NORMAL path.
         // A security tool must not have a hidden default for "the thing I depend
