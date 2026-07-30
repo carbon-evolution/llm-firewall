@@ -731,28 +731,41 @@ AGENTFW_JUDGE_URL=http://localhost:1234/v1/chat/completions \
   cargo test -p agentfw --test judge_corpus -- --ignored --nocapture
 ```
 
-#### Why a small model — 4B vs 9B, measured on the same corpus
+#### Which model — measured across sizes, quantizations, and fine-tunes
 
-The obvious question is whether a bigger model would be better. We measured `qwen3.5-9b` on the same
-50-sample corpus. It is a **reasoning model**, and that turns out to be decisive:
+The obvious question is whether a bigger or fancier local model would be better. We ran the **same
+50-sample corpus** against several. These are **not a controlled size sweep** — quantization (8-bit,
+QAT), training method (instruct vs. reasoning vs. MTP), and fine-tune (stock vs. "uncensored") all vary
+alongside parameter count. That is deliberate: it answers the real deployment question — *"what happens
+if you point the judge at whatever local model you already run?"* — not an academic apples-to-apples.
 
-| | `gemma-4-e4b` (4B, instruct) | `qwen3.5-9b` (reasoning) |
-|---|---|---|
-| Runs under the production contract (`max_tokens: 4`)? | ✅ yes | ❌ **no** — emits an empty answer on 100% of samples (spends the whole budget thinking), so every call is `Unavailable` |
-| Detection rate | 100.0% (25/25) | 100.0% (25/25) *(only when given `max_tokens: 1024` to finish reasoning)* |
-| False-positive rate | 4.0% (1/25) | **0.0% (0/25)** — it cleared the security-policy doc the 4B flags |
-| Latency (p50 / mean) | **386 ms / 416 ms** | **37,600 ms / 38,800 ms** — ~90× over budget |
-| p99 latency | 625 ms | 81,700 ms |
+| Model | What it is | Runs under the production `max_tokens: 4` contract? | Detection | FP | Latency (p50 / mean / p99) |
+|---|---|---|---|---|---|
+| `gemma-4-e4b` | ~4B, **instruct** (non-reasoning) | ✅ **yes** | 100% (25/25) | **4.0%** (1/25) | **386 ms / 416 ms / 625 ms** |
+| `qwen3.5-9b` | 9B, **reasoning** | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 37.6 s / 38.8 s / 81.7 s\* |
+| `qwen3.5-9b-uncensored-...@q8_0` | 9B, **uncensored** fine-tune, **8-bit (q8_0)**, reasoning | ❌ no — empty answer on 100% of samples | 100%\* | 0.0%\* | 55.8 s / 61.0 s / 130.0 s\* |
+| `gemma-4-12b-qat` | 12B, **QAT** (quantization-aware training) | — could not load (11.75 GB, memory guardrail) | — | — | — |
 
-The 9B is *marginally* more accurate — one fewer false positive out of 25 — but that edge is worthless
-here for two reasons. First, at ~38 s per call it is ~90× over the 3 s budget and would blow Claude
-Code's 5 s hook timeout on every single call; under the real `max_tokens: 4` contract it produces **no
-answer at all**. Second, the judge may only ever *tighten* a verdict, so the 4B's single false positive
-costs exactly one extra confirmation prompt — not a bypass. `enable_thinking:false` and the `/no_think`
-soft switch did not disable reasoning in this build, so a reasoning model is **structurally
-incompatible** with this tier regardless of its accuracy.
+\* Reasoning models produce **nothing** under the real `max_tokens: 4` budget (they spend it all
+thinking). The accuracy/latency shown is only reachable by giving them `max_tokens: 1024` to finish —
+a configuration the daemon never runs. Even then, the uncensored 8-bit build left **2 benign samples
+`Unavailable`** because it couldn't finish reasoning within 1024 tokens.
 
-**Recommendation:** a small *non-reasoning instruct* model (~4B). "Bigger" is not better when the tier's
+**What the numbers say.** The two 9B reasoning models are *marginally* more accurate than the 4B — each
+clears the one security-policy document the 4B false-flags (0% vs. 4% FP). That edge is worthless here:
+
+- **They cannot run under the contract at all.** At `max_tokens: 4` both emit an empty answer on every
+  sample → 100% `Unavailable`. `enable_thinking:false` and the `/no_think` soft switch did **not**
+  disable reasoning in these builds, and the "uncensored" fine-tune reasons just as unconditionally as
+  the stock one — so being uncensored changes nothing about fitness for this tier.
+- **Given room to think they are 90–150× over budget** (mean 38.8 s and 61.0 s vs. the 4B's 0.42 s),
+  far past Claude Code's 5 s hook timeout — the 8-bit quant made the uncensored model *slower*, not
+  faster.
+- **The 4B's one false positive is nearly free**, because the judge may only ever *tighten* a verdict:
+  the cost is a single extra confirmation prompt, never a bypass.
+
+**Recommendation:** a small *non-reasoning instruct* model (~4B). "Bigger", "uncensored", or a higher-bit
+quant is not better when the tier's
 whole value is a fast second opinion that fits inside a synchronous hook.
 
 **Measured limitations (numbers, not hedges).** These are documented gaps, not silent ones:
