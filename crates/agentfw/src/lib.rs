@@ -7,10 +7,23 @@
 pub mod audit;
 pub mod config;
 pub mod decision;
+pub mod handlers;
 pub mod hook;
 pub mod map;
 pub mod provenance;
 pub mod replay;
 pub mod token;
 
+use axum::routing::{get, post};
+use axum::Router;
+
 pub use config::Config;
+pub use handlers::{AppState, Shared};
+
+/// The axum router. Exposed so integration tests can drive it without a socket.
+pub fn app(state: Shared) -> Router {
+    Router::new()
+        .route("/hook", post(handlers::hook))
+        .route("/health", get(handlers::health))
+        .with_state(state)
+}
