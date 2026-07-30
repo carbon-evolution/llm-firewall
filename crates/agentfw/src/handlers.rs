@@ -11,13 +11,14 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
-use llm_firewall_agent::{AgentFirewall, Verdict};
+use llm_firewall_agent::{AgentFirewall, EventKind, Trust, Verdict};
 
 use crate::audit::{AuditFinding, AuditLine, AuditSink, AuditTaint};
 use crate::config::Config;
 use crate::decision;
 use crate::hook::{HookEvent, HookPayload};
 use crate::map;
+use crate::spans::SpanCache;
 
 /// Stable audit-log string for a verdict. Deliberately explicit rather than
 /// `Debug`-derived, for the same reason as `HookEvent::as_str`: the audit log is a
@@ -66,6 +67,11 @@ pub struct AppState {
     pub audit: AuditSink,
     pub config: Config,
     pub token: String,
+    /// Bounded per-session cache of untrusted content, keyed by the sequence
+    /// number the taint tracker recorded it under. The (not-yet-wired) judge
+    /// tier reads from this rather than from `TaintMark`, which deliberately
+    /// carries only an 8-byte fingerprint. See `spans.rs`.
+    pub spans: SpanCache,
 }
 
 pub type Shared = Arc<AppState>;
@@ -151,6 +157,27 @@ pub async fn hook(
     let is_pre = payload.event == HookEvent::PreToolUse;
     if payload.event == HookEvent::SessionEnd {
         st.sessions.end(&payload.session_id);
+        st.spans.end_session(&payload.session_id);
+    }
+
+    // Retain untrusted content by the same sequence number the taint tracker
+    // will fingerprint it under, so a later `Escalate` has something to hand the
+    // judge. Mirrors exactly the condition `AgentFirewall::inspect` uses to
+    // decide what becomes taint (`crates/agent/src/engine.rs`): a `ToolResult`
+    // only when its source is untrusted, a `SubagentReport` unconditionally
+    // (subagent output has no `source` field and is always treated as tainted).
+    match &event.kind {
+        EventKind::ToolResult {
+            content, source, ..
+        } => {
+            if source.trust() == Trust::Untrusted {
+                st.spans.put(&payload.session_id, seq, content);
+            }
+        }
+        EventKind::SubagentReport { content, .. } => {
+            st.spans.put(&payload.session_id, seq, content);
+        }
+        _ => {}
     }
 
     // `AgentFirewall::inspect` takes `&mut self`, so the guard must be held across

@@ -14,6 +14,7 @@ pub mod judge;
 pub mod map;
 pub mod provenance;
 pub mod replay;
+pub mod spans;
 pub mod token;
 
 use axum::routing::{get, post};

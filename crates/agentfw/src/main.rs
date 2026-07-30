@@ -88,6 +88,7 @@ async fn serve() -> anyhow::Result<()> {
         firewall: Mutex::new(firewall),
         sessions: Sessions::default(),
         audit: AuditSink::open(&audit_path)?,
+        spans: agentfw::spans::SpanCache::new(64, cfg.judge.max_span_bytes),
         config: cfg.clone(),
         token,
     });

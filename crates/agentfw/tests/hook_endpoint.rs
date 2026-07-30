@@ -21,6 +21,7 @@ fn state(enforce: bool, dir: &std::path::Path) -> agentfw::Shared {
         firewall: Mutex::new(AgentFirewall::with_default_policy()),
         sessions: Sessions::default(),
         audit: AuditSink::open(&dir.join("audit.jsonl")).unwrap(),
+        spans: agentfw::spans::SpanCache::new(64, 4096),
         config: Config {
             enforce,
             ..Config::default()
