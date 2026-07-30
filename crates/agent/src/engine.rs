@@ -31,6 +31,8 @@ pub struct Outcome {
     pub taint: Option<TaintMark>,
     pub risk_score: u8,
     pub egress_hosts: Vec<String>,
+    /// Set only when `verdict` is `Escalate` — what to do if no judge answers.
+    pub fallback: Option<Verdict>,
 }
 
 /// Holds all per-session state. One instance serves many sessions.
@@ -182,7 +184,7 @@ impl AgentFirewall {
             verdict,
             rule,
             message,
-            fallback: _,
+            fallback,
         } = self.policy.evaluate(&signals);
 
         Outcome {
@@ -193,6 +195,7 @@ impl AgentFirewall {
             taint: signals.taint,
             risk_score,
             egress_hosts: signals.egress_hosts,
+            fallback,
         }
     }
 
@@ -224,6 +227,7 @@ impl AgentFirewall {
             taint: None,
             risk_score: 0,
             egress_hosts: Vec::new(),
+            fallback: None,
         }
     }
 }
@@ -452,6 +456,33 @@ mod tests {
         ));
         assert_eq!(d.verdict, Verdict::Deny);
         assert_eq!(d.rule.as_deref(), Some("deny-subagent-escalation"));
+    }
+
+    #[test]
+    fn an_escalate_policy_surfaces_the_fallback_on_the_outcome() {
+        // The daemon needs the fallback to resolve Escalate without a judge, and
+        // the library must not perform I/O to find out.
+        let policy = AgentPolicySet::from_yaml(
+            "agent_policies:\n  - name: esc\n    when: { min_action_class: side_effecting }\n    action: escalate\n    fallback: ask\ndefault: allow\n",
+        )
+        .unwrap();
+        let mut f = AgentFirewall::new(policy, DEFAULT_TAINT_CAP);
+        let d = f.inspect(&ev(
+            1,
+            EventKind::ToolCall {
+                tool: "Write".into(),
+                args: serde_json::json!({ "file_path": "/tmp/x", "content": "hi" }),
+            },
+        ));
+        assert_eq!(d.verdict, Verdict::Escalate);
+        assert_eq!(d.fallback, Some(Verdict::Ask));
+    }
+
+    #[test]
+    fn a_normal_outcome_has_no_fallback() {
+        let mut f = fw();
+        let d = f.inspect(&ev(1, EventKind::SessionStart));
+        assert_eq!(d.fallback, None);
     }
 
     #[test]
