@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Arthur Lin (carbon-evolution)
 
+mod agent_dataset;
+mod agent_eval;
+mod agent_guard;
 mod dataset;
 mod evaluate;
 mod metrics;
