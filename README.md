@@ -477,6 +477,12 @@ found 7 of 15 benign follow-up commands tainting; the real rate on real work is 
 matters, and finding it out by having live sessions interrupted is the expensive way. When you are
 satisfied, set `enforce: true` in `~/.agentfw/config.yaml` and restart.
 
+**Your audit log stays yours.** It is written to `~/.agentfw/audit.jsonl` at mode `0600` and nothing
+sends it anywhere — there is no telemetry, no upload, no phone-home. It records prompts, file paths
+and tool arguments, so treat it as sensitive: it can contain client names, private repository paths
+and live credentials. `agentfw replay` reads it locally and prints only aggregate numbers. If you ever
+want to share findings from it, share the statistics, not the file.
+
 **One thing to know:** hooks have a 5-second timeout, and an unreachable daemon *fails open* — the
 tool call proceeds, but only after waiting that out. So if a stopped daemon goes unnoticed, it reads
 as "Claude Code feels slow" rather than as an error. `agentfw install` says so too.
