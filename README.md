@@ -16,7 +16,7 @@ A pure-Rust **firewall for LLMs and the agents built on them**. Two layers, one 
 ![Release](https://img.shields.io/github/v/release/carbon-evolution/llm-firewall?sort=semver)
 ![GHCR](https://img.shields.io/badge/ghcr.io-container-2496ed?logo=docker&logoColor=white)
 ![Rust](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)
-![Tests](https://img.shields.io/badge/tests-249%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-336%20passing-brightgreen)
 ![Made with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e?logo=rust&logoColor=white)
 
 <p align="center">
@@ -108,8 +108,8 @@ the moment a tool result is about to re-enter the context. That is what the agen
 |---|---|---|
 | **Inspects** | prompts and responses | tool calls, tool results, subagent spawns |
 | **Verdicts** | `allow` / `mask` / `block` / `flag` | `Allow` / `Ask` / `Deny` |
-| **Deployed as** | reverse proxy (`llm-firewall` binary) | library (`llm-firewall-agent`); runtime in phase 09 |
-| **Status** | production-ready, benchmarked | library complete, 130 tests, not yet wired |
+| **Deployed as** | reverse proxy (`llm-firewall` binary) | `agentfw` daemon, via Claude Code's native hooks |
+| **Status** | production-ready, benchmarked | running; **ships in shadow mode**, enforcement opt-in |
 
 ---
 
@@ -439,7 +439,54 @@ resp = client.messages.create(
 
 Tune the behavior in `policies/default.yaml` (allow / mask / block / flag rules) — no recompile needed.
 
-### 4. Using the agent library
+### 4. Running the agent firewall
+
+The agent layer runs as a small daemon that Claude Code's native hooks talk to over loopback HTTP.
+
+```bash
+cargo install --path crates/agentfw    # or: cargo run -p agentfw -- <cmd>
+
+agentfw install    # prints the settings.json hook block + setup instructions
+agentfw serve      # starts the daemon on 127.0.0.1:8787
+agentfw replay     # "what would this have done?" — read this before enforcing
+```
+
+`install` prints a hook block for all five events and tells you to export the bearer token by
+environment variable. **The token is never printed and never written into the settings file** —
+settings get committed to version control, so only its path is shown.
+
+**It ships in shadow mode, and that is deliberate.** Every verdict is computed and written to
+`~/.agentfw/audit.jsonl`, but `permissionDecision` is always `defer`, so nothing is blocked and your
+existing permission rules are untouched. Run your normal work for a few days, then:
+
+```
+$ agentfw replay
+events: 1284  sessions: 17  malformed: 0
+allow: 1265  ask: 17  deny: 2
+would have interrupted: 1.5% of events
+latency p50: 1840 us   p99: 9210 us
+
+rules fired:
+      14  ask-unknown-host
+       3  ask-tainted-side-effect
+       2  deny-secret-egress
+```
+
+That interruption rate is the number that decides whether enforcement is safe. A lab measurement
+found 7 of 15 benign follow-up commands tainting; the real rate on real work is the only one that
+matters, and finding it out by having live sessions interrupted is the expensive way. When you are
+satisfied, set `enforce: true` in `~/.agentfw/config.yaml` and restart.
+
+**One thing to know:** hooks have a 5-second timeout, and an unreachable daemon *fails open* — the
+tool call proceeds, but only after waiting that out. So if a stopped daemon goes unnoticed, it reads
+as "Claude Code feels slow" rather than as an error. `agentfw install` says so too.
+
+**Why `defer` and not `allow`:** `allow` would *approve* a tool call into the normal permission flow.
+`defer` leaves your own rules to decide. Mapping our `Allow` verdict onto `allow` would silently
+auto-approve calls you would otherwise have been prompted about — installing a security tool would
+weaken the protection already there. Small distinction, and the reason this phase exists.
+
+### 5. Using the agent library directly
 
 The agent layer is a library today — the daemon and collectors land in phase 09. To embed it:
 
@@ -695,12 +742,12 @@ Fairness rules and corpus notes: [`docs/methodology.md`](docs/methodology.md).
 ## Test suite
 
 ```bash
-cargo test --all                          # 249 tests across the 4 crates
+cargo test --all                          # 336 tests across the 5 crates
 cargo clippy --all-targets -- -D warnings # clean
 cargo fmt --all --check                   # clean
 ```
 
-**249 tests passing, 0 failing**, across the workspace:
+**336 tests passing, 0 failing**, across the workspace:
 
 | Crate | Tests | Covers |
 |---|--:|---|
@@ -708,8 +755,9 @@ cargo fmt --all --check                   # clean
 | `llm-firewall` (proxy) | 24 | OpenAI + Anthropic adapters, forwarding, streaming |
 | `llm-firewall-bench` | 8 | dataset loading, metrics, scorecard |
 | **`llm-firewall-agent`** | **130** | event schema, facets, fingerprints, taint, actions, egress, authority, policy, engine, scenarios |
+| **`agentfw`** (daemon) | **87** | config, token auth, hook parsing, provenance, mapping, verdicts, audit, router, install, replay, end-to-end |
 
-### What the agent layer's 130 tests cover
+### What the agent library's 130 tests cover
 
 | Module | Tests | What it pins |
 |---|--:|---|
@@ -723,6 +771,22 @@ cargo fmt --all --check                   # clean
 | `policy` | 13 | first-match precedence, deny-before-ask ordering, unknown-key rejection |
 | `engine` | 12 | integration, dedupe-before-scoring, benign-baseline regressions |
 | `scenarios` | 7 | end-to-end attack and benign sessions through the public API only |
+
+### What the daemon's 87 tests cover
+
+| Module | Tests | What it pins |
+|---|--:|---|
+| `provenance` | 18 | tool → trust level, path traversal, prefix-sibling dirs, relative paths resolved against cwd, never `UserPrompt` |
+| `map` | 11 | hook payload → `AgentEvent`, UTF-8-safe truncation and its reported flag, empty-`session_id` refusal |
+| `hook` | 11 | tolerant payload parsing, unknown events degrade rather than error, stable audit event names |
+| `replay` | 8 | verdict counts, interruption rate, rule ranking, latency percentiles, round-trip against the real audit serializer |
+| `token` | 7 | 256-bit generation, constant-time compare, `Bearer` strictness, `0600` on creation |
+| `install` | 7 | all five hook events, `matcher: "*"`, token by env var only, no literal secret in output |
+| `decision` | 6 | **`Allow` → `defer`, never `allow`**; shadow mode never enforces; exact serialized hook shape |
+| `audit` | 5 | append-not-truncate, one JSON object per line, raw bytes for unknown events, `0600` |
+| `config` | 4 | safe defaults, shadow mode default, non-loopback bind rejected at parse time |
+| `handlers` | 2 | per-session monotonic sequence numbers, reset on session end |
+| `tests/hook_endpoint.rs` | 8 | auth gating, benign work uninterrupted, the kill chain denied, shadow mode logging without enforcing, malformed payloads never blocking, health |
 
 **On reading a 100% pass rate.** It is the expected result, not an achievement — tests were written
 before implementation throughout, so a red test was a step in the process. The number that mattered
@@ -740,6 +804,7 @@ sufficient.
 - `crates/proxy` — the OpenAI/Anthropic-compatible reverse proxy (`llm-firewall` binary).
 - `crates/bench` — the standardized benchmark harness (`llm-firewall-bench`).
 - `crates/agent` — agent-loop inspection (`llm-firewall-agent`). Pure, no I/O.
+- `crates/agentfw` — the daemon and Claude Code hook collector (`agentfw` binary). The only crate doing I/O for the agent layer; it maps, calls, records, and translates, but decides nothing.
 - `docs/superpowers/specs` — design records: what was decided, why, and what was rejected.
 - `docs/superpowers/plans` — the task-by-task implementation plans those designs produced.
 
@@ -754,7 +819,8 @@ sufficient.
 | **Native Anthropic adapter** | `/v1/messages` support alongside the OpenAI format — system blocks, content blocks, `x-api-key`. |
 | **Standards + moderation** | OWASP LLM Top 10 and MITRE ATLAS tagging on every finding, `--report` compliance matrix, output-handling detector (LLM05), opt-in content moderation. |
 | **v0.2.0** | Obfuscation resilience: dual-scan normalization pre-pass (zero-width stripping, homoglyph folding, base64 decoding). Rule-layer recall under obfuscation restored from 0% to the clean rate, 0.00% FPR on a multilingual benign control. External validation against NVIDIA garak. |
-| **v0.3 phase 08** *(this branch)* | **Agent firewall library.** Ten modules, 130 tests: event schema, facet projection into existing detectors, winnowed Rabin–Karp fingerprinting, two-mechanism taint tracking, action classification, egress extraction, subagent authority containment, agent policy engine, integration engine, end-to-end scenarios. |
+| **v0.3 phase 08** | **Agent firewall library.** Ten modules, 130 tests: event schema, facet projection into existing detectors, winnowed Rabin–Karp fingerprinting, two-mechanism taint tracking, action classification, egress extraction, subagent authority containment, agent policy engine, integration engine, end-to-end scenarios. |
+| **v0.3 phase 09** *(this branch)* | **The daemon.** `agentfw serve` wired into Claude Code's native hooks, `agentfw install`, `agentfw replay`. Ships in shadow mode. Verified end to end: a poisoned page followed by an exfiltration attempt denies via `deny-tainted-privilege`, while the identical run under shadow mode returns no decision and logs the would-have-been verdict. |
 
 ### Roadmap
 
