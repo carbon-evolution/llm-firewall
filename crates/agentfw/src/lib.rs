@@ -10,6 +10,7 @@ pub mod decision;
 pub mod handlers;
 pub mod hook;
 pub mod install;
+pub mod judge;
 pub mod map;
 pub mod provenance;
 pub mod replay;
