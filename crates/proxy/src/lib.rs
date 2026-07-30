@@ -3,6 +3,7 @@
 
 //! LLM Firewall proxy — library surface (also used by integration tests).
 
+pub mod agent_scan;
 pub mod anthropic;
 pub mod audit;
 pub mod config;
