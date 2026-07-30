@@ -16,7 +16,7 @@ A pure-Rust **firewall for LLMs and the agents built on them**. Two layers, one 
 ![Release](https://img.shields.io/github/v/release/carbon-evolution/llm-firewall?sort=semver)
 ![GHCR](https://img.shields.io/badge/ghcr.io-container-2496ed?logo=docker&logoColor=white)
 ![Rust](https://img.shields.io/badge/rust-1.96%2B-orange?logo=rust)
-![Tests](https://img.shields.io/badge/tests-415%20passing-brightgreen)
+![Tests](https://img.shields.io/badge/tests-422%20passing-brightgreen)
 ![Made with Rust](https://img.shields.io/badge/built%20with-Rust-b7410e?logo=rust&logoColor=white)
 
 <p align="center">
@@ -977,23 +977,75 @@ alarms near/under 1%. deepset's lower figure reflects that benchmark's loose def
 
 Fairness rules and corpus notes: [`docs/methodology.md`](docs/methodology.md).
 
+### The agent layer — attack scorecard
+
+The agent firewall is held to the **same two-number standard**: a **40-session corpus** (19 attack across
+7 categories, 21 benign) replayed through the real `AgentFirewall` and shipped policy. A session is
+"caught" if any event would interrupt the agent (`Deny` or `Ask`); `Escalate` resolves to its fallback,
+exactly as the shipped daemon does **with no judge configured** (the default install).
+
+**Honesty caveat, up front:** unlike the text layer's four *public* datasets, there is no established
+public agent-attack benchmark in this event form, so this corpus is **hand-authored**. It measures
+**coverage of known attack shapes**, not generalization to novel attacks — a weaker claim than a
+held-out public set, and stated as such.
+
+Measured on the shipped default policy, **no judge**:
+
+| Metric | Result |
+|---|---|
+| **False-positive rate** (benign sessions interrupted) — the deciding number | **0.0%** (0/21) |
+| **Detection rate** (attack sessions caught) | **73.7%** (14/19) |
+
+| Category | Detected |
+|---|---|
+| secret-egress | 4/4 |
+| unknown-host | 3/3 |
+| subagent-escalation | 2/2 |
+| pii-egress | 1/1 |
+| indirect-injection | 3/5 |
+| mcp-poisoning | 1/2 |
+| destructive-from-taint | 0/2 |
+
+**What the misses show — honestly.** Zero false positives at 73.7% detection, and the gaps are
+instructive rather than embarrassing:
+
+- **Tainted exfil to a *novel* host** (`indirect-injection` misses): the `escalate-tainted-side-effect`
+  rule matches before `ask-unknown-host`, so with **no judge** it resolves to its `allow` fallback. This
+  is precisely the band the **judge tier (phase 10)** exists to catch — the benchmark quantifies its
+  value rather than assuming it.
+- **`destructive-from-taint` 0/2**: the action *is* classified destructive, but the taint tracker's
+  winnowed fingerprints didn't match on a short shared path token — a real granularity limit of
+  fingerprint-based taint.
+- **`mcp-poisoning` 1/2**: the injection detector caught "ignore all previous instructions" but scored a
+  softer "SYSTEM: you are now authorized…" description below the block threshold.
+
+The benign half — including the hard cases (an agent that fetches a page *then acts*, reads
+credential-shaped paths without sending, calls allowlisted hosts) — produced **zero** false alarms, which
+is the number that decides whether enforcement is safe to turn on.
+
+**Reproduce:**
+
+```bash
+cargo run -p llm-firewall-bench -- --agent crates/bench/corpora/agent_sessions.jsonl
+```
+
 ---
 
 ## Test suite
 
 ```bash
-cargo test --all                          # 415 tests across the 5 crates
+cargo test --all                          # 422 tests across the 5 crates
 cargo clippy --all-targets -- -D warnings # clean
 cargo fmt --all --check                   # clean
 ```
 
-**415 tests passing, 0 failing**, across the workspace:
+**422 tests passing, 0 failing**, across the workspace:
 
 | Crate | Tests | Covers |
 |---|--:|---|
 | `llm-firewall-core` | 87 | detectors, scoring, policy, masking, normalization, taxonomy |
 | `llm-firewall` (proxy) | 34 | OpenAI + Anthropic adapters, forwarding, streaming, agent inspection of tool blocks |
-| `llm-firewall-bench` | 8 | dataset loading, metrics, scorecard |
+| `llm-firewall-bench` | 15 | dataset loading, metrics, scorecard, agent-attack corpus + replay guard + evaluation |
 | **`llm-firewall-agent`** | **148** | event schema, facets, fingerprints, taint, actions, egress, authority, policy, engine, escalate + fallback, MCP handshake inspection, scenarios |
 | **`agentfw`** (daemon) | **138** | config, token auth, hook parsing, provenance, mapping, verdicts, audit, router, install, replay, the judge tier + span cache, the MCP collector, end-to-end |
 
@@ -1072,7 +1124,8 @@ sufficient.
 | **v0.3 phase 09** | **The daemon.** `agentfw serve` wired into Claude Code's native hooks, `agentfw install`, `agentfw replay`. Ships in shadow mode. Verified end to end: a poisoned page followed by an exfiltration attempt denies via `deny-tainted-privilege`, while the identical run under shadow mode returns no decision and logs the would-have-been verdict. |
 | **v0.3 phase 10** | **Optional local-model judge tier.** A new `escalate` policy action with a required `fallback` resolves the ambiguous band (tainted + side-effecting) by asking a local model one narrow question about the content — `INJECTION` or `DOCUMENTATION` — and may only *tighten* to `ask`, never soften. Loopback-only, off by default. Measured on a 50-sample corpus: 100% detection / 4% FP / p99 625 ms on `gemma-4-e4b`; a five-model comparison shows reasoning and larger models miss the latency budget. 8 mock-model integration tests including a rejected injection-in-answer. |
 | **v0.3 phase 11a** | **MCP supply-chain collector.** A transparent `agentfw mcp` stdio proxy pins each server's tool manifest and, via a new `/mcp` daemon endpoint, catches three handshake attacks deterministically: manifest drift (rug-pull), tool-name shadowing, and description poisoning. Ships in shadow mode, fails open, off by default. |
-| **v0.3 phase 11b** *(this branch)* | **API collector.** The reverse proxy embeds an `AgentFirewall` and inspects the `tool_use`/`tool_result` blocks in OpenAI/Anthropic traffic — stateless per request/response cycle — so any framework speaking those APIs gets tool-boundary protection. Blockable moment is the response's `tool_use`; off by default, shadow-first; streaming deferred. |
+| **v0.3 phase 11b** | **API collector.** The reverse proxy embeds an `AgentFirewall` and inspects the `tool_use`/`tool_result` blocks in OpenAI/Anthropic traffic — stateless per request/response cycle — so any framework speaking those APIs gets tool-boundary protection. Blockable moment is the response's `tool_use`; off by default, shadow-first; streaming deferred. |
+| **v0.3 phase 12** *(this branch)* | **Agent-attack benchmark.** A 40-session hand-authored corpus (19 attack / 21 benign) replayed through the real `AgentFirewall`, scored to the two-number standard: **0.0% false-positive rate, 73.7% detection** on the no-judge default, with a per-category table and honestly-documented misses. Completes the v0.3 agent-firewall arc. |
 
 ### Roadmap
 
@@ -1081,7 +1134,7 @@ sufficient.
 | **09** | `agentfw serve` + Claude Code hook collector — daemon, Unix socket, audit log, approval UX. First real protection on a real machine. |
 | **10** | ✅ Local LLM judge tier for the ambiguous band (`escalate` action, tighten-only, off by default, measured). |
 | **11** | ✅ MCP collector — manifest pinning, drift, shadowing, description poisoning (11a); ✅ API collector — agent inspection of tool blocks in the proxy (11b). |
-| **12** | Agent-attack benchmark and published scorecard, using the same two-number honesty standard as the text layer. |
+| **12** | ✅ Agent-attack benchmark & scorecard — 40-session corpus, 0.0% FPR / 73.7% detection, two-number honesty standard. |
 
 Design records for every decision — including the ones that were measured and reversed — live in
 [`docs/superpowers/specs/`](docs/superpowers/specs/).
