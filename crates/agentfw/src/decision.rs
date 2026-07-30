@@ -169,6 +169,14 @@ mod tests {
     }
 
     #[test]
+    fn escalate_must_be_resolved_before_reaching_a_decision() {
+        // `decide` should never see Escalate — the handler resolves it first. If it
+        // ever does, treat it as the safest thing that cannot be wrong: no opinion.
+        let d = decide(Verdict::Escalate, Some("r"), Some("m"), true);
+        assert_eq!(d.permission_decision, "defer");
+    }
+
+    #[test]
     fn a_deferred_decision_omits_the_reason_field() {
         let d = decide(Verdict::Allow, None, None, true);
         let j = serde_json::to_value(d.to_hook_output()).unwrap();

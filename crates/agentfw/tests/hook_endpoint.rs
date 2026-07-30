@@ -22,6 +22,9 @@ fn state(enforce: bool, dir: &std::path::Path) -> agentfw::Shared {
         sessions: Sessions::default(),
         audit: AuditSink::open(&dir.join("audit.jsonl")).unwrap(),
         spans: agentfw::spans::SpanCache::new(64, 4096),
+        // Disabled judge (default): every judge() returns Unavailable, so any
+        // Escalate falls through to its rule's fallback — the standard install.
+        judge: agentfw::judge::Judge::new(Default::default()),
         config: Config {
             enforce,
             ..Config::default()

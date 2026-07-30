@@ -29,6 +29,11 @@ pub struct AuditLine {
     pub findings: Vec<AuditFinding>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taint: Option<AuditTaint>,
+    /// What the local judge concluded, when an `Escalate` verdict was resolved by it.
+    /// Absent on every event that did not escalate — the common case. Recorded so the
+    /// audit log explains why a verdict landed where it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub judge: Option<String>,
     pub egress_hosts: Vec<String>,
     pub latency_us: u128,
     pub truncated: bool,
@@ -133,6 +138,7 @@ mod tests {
             risk_score: 90,
             findings: vec![],
             taint: None,
+            judge: None,
             egress_hosts: vec![],
             latency_us: 120,
             truncated: false,

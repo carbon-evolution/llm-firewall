@@ -89,6 +89,7 @@ async fn serve() -> anyhow::Result<()> {
         sessions: Sessions::default(),
         audit: AuditSink::open(&audit_path)?,
         spans: agentfw::spans::SpanCache::new(64, cfg.judge.max_span_bytes),
+        judge: agentfw::judge::Judge::new(cfg.judge.clone()),
         config: cfg.clone(),
         token,
     });

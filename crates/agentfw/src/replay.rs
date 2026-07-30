@@ -204,6 +204,7 @@ mod tests {
             risk_score: 40,
             findings: vec![],
             taint: None,
+            judge: None,
             egress_hosts: vec!["evil.com".into()],
             latency_us: 20,
             truncated: false,
