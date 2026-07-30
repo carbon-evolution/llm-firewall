@@ -444,9 +444,32 @@ ATLAS tags flow into the existing `--report` compliance matrix unchanged.
   regression testing against *real* sessions and is how the ambiguous band gets tuned honestly.
 - **Benchmark:** extend the `bench` crate with an agent-attack corpus (indirect-injection scenarios
   from AgentDojo and InjecAgent, both public). Report the same two headline numbers as v1 —
-  detection rate **and** false-positive/over-defense rate on benign agent sessions. Benign sessions
-  are harvested from the user's own real audit logs, which is a corpus almost nobody else has.
+  detection rate **and** false-positive/over-defense rate on benign agent sessions. See the data
+  handling rule below — real session logs are **not** a publishable corpus.
 - **CI:** must stay green on the existing 106 tests; no changes to `core`'s public API.
+
+### Data handling — what may and may not be published
+
+**The audit log never leaves the operator's machine, and nothing derived from its content goes into
+this repository.** It records prompts, file paths, tool arguments and fetched content. That can
+include client names, private repository paths, internal hostnames and live credentials. It is mode
+`0600` for that reason, and an earlier draft of this spec described "harvesting benign sessions from
+the user's own real audit logs", which read as a plan to publish exactly that. It was not, and this
+section replaces it.
+
+| Category | Publishable? | Why |
+|---|---|---|
+| The audit log, or excerpts of it | **No** | Contains prompts, paths, arguments, fetched page content. |
+| Aggregate statistics — event counts, interruption rate, per-rule counts, latency percentiles | **Yes** | Numbers about behaviour reveal nothing about the work being done. |
+| Rule and code changes prompted by a real observation | **Yes** | The fix is code. The regex correction is publishable; the command that revealed it is not. |
+| A benign benchmark corpus | **Only if synthesized** | Hand-written fixtures modelled on observed *shapes* — "six path-like arguments", "a fetch followed by a build" — not real content. |
+| A sanitized real corpus | **Operator's explicit decision**, file by file | Sanitization is hard to verify and easy to get wrong; it is never a default. |
+
+**Practical consequence for phase 10.** Tuning happens by running `agentfw replay` locally and reading
+the summary. What gets committed is the resulting policy change plus the statistics that justify it —
+"this rule fired on 14 of 1,284 events, all benign, so its condition was narrowed" — never the events.
+Every rule change made in phases 08 and 09 came from measurements against *synthetic* fixtures (a
+fabricated poisoned page, a fake README, a test AWS key), and that is the pattern to keep.
 
 ### Benchmarking against recognized public suites (phase 12)
 
@@ -500,7 +523,7 @@ Each phase is its own implementation plan, spec-reviewed and shipped before the 
 |-------|-------|-------|
 | **08** | `crates/agent`: event model, taint tracker, action classifier, rule engine, verdict logic, agent policy parsing. Zero I/O, fully unit-tested. | A library and a test suite. Nothing runs yet. |
 | **09** | `agentfw serve` + `agentfw hook`: daemon, socket, audit log, approval UX, Claude Code hook wiring. | **Real protection on the user's own machine.** First real data. |
-| **10** | Local LLM judge tier + `agentfw replay` + rule tuning against harvested real sessions. | Tuned thresholds, published numbers. |
+| **10** | Local LLM judge tier + `agentfw replay` + rule tuning informed by real sessions (locally — see the data handling rule in §9). | Tuned thresholds; published *statistics*, never session content. |
 | **11** | API collector in `proxy` + MCP collector (`agentfw mcp`) with manifest pinning. | Framework-agnostic coverage. |
 | **12** | Agent-attack benchmark, scorecard, README, demo recording. | The public showcase. |
 

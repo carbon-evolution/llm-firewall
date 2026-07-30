@@ -257,7 +257,7 @@ tool call is genuinely irritating and would look like Claude Code being slow rat
 This log is not a by-product. It is:
 
 - the **phase 10 tuning corpus**, via `agentfw replay`;
-- the **benign-session benchmark corpus** for phase 12, which no public dataset supplies;
+- the basis for a phase-12 benign corpus — but **synthesized** from observed shapes, never the log itself (see the data handling rule in the parent design spec §9);
 - the only way to learn the real false-positive rate before enforcement is switched on.
 
 Raw received bytes are preserved for `Unknown` events, per the obligation recorded in phase 08 —
