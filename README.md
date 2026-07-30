@@ -790,6 +790,26 @@ measured with `max_tokens: 1024` like the 9B reasoning models, not under the rea
 quant is not better when the tier's
 whole value is a fast second opinion that fits inside a synchronous hook.
 
+<details>
+<summary>Other local models on the test machine — why they were not evaluated</summary>
+
+The comparison covers the models that answer the "is bigger/different better?" question. The remaining
+downloaded models were out of scope for a synchronous-hook judge and were not run:
+
+| Model | Why not evaluated |
+|---|---|
+| `gemma-4-e4b-uncensored` (4B, uncensored) | The most relevant untested one — an uncensored *small* model. Needs 9.64 GB and could not load alongside the resident 12B (memory guardrail); testable with a model swap. Expected to behave like the base 4B (instruct, answers under contract), since size and reasoning-mode — not the uncensored fine-tune — are what determined fitness above. |
+| `claude-fable@q6_k` | A lower-bit (Q6) quant of the same MTP build already measured at Q8; the reasoning-model verdict does not change with quant. |
+| `qwen3.5-9b-uncensored-...@q4_k_m` | A Q4 quant of the uncensored 9B already measured at Q8; same reasoning-model verdict. |
+| `qwen/qwen2.5-coder-14b`, `qwen3-coder-30b-a3b-instruct-mlx`, `gemma-4-12b-coder-fable5-...` | **Coder** models — tuned for code generation, not the genre-classification the judge does; and 14–30B is well past the latency budget. |
+| `qwen3.5-35b-a3b-uncensored` (35B MoE) | Far too large for the machine and orders of magnitude past the latency budget. |
+
+The pattern is already conclusive across five measured models: *reasoning-vs-instruct and raw latency*
+decide fitness, not parameter count, quantization, or censored-vs-uncensored. Nothing untested here
+would move that conclusion.
+
+</details>
+
 **Measured limitations (numbers, not hedges).** These are documented gaps, not silent ones:
 
 - **Span truncation blind spot.** At the default `max_span_bytes: 4096`, an injection placed *after*
