@@ -27,6 +27,8 @@ enum Cmd {
         #[arg(long)]
         log: Option<PathBuf>,
     },
+    /// Print the settings.json hook block and setup instructions.
+    Install,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -44,6 +46,19 @@ fn main() -> anyhow::Result<()> {
             let path = log.unwrap_or_else(|| home.join("audit.jsonl"));
             let body = std::fs::read_to_string(&path)?;
             print!("{}", agentfw::replay::summarize(&body).render());
+            Ok(())
+        }
+        Cmd::Install => {
+            let home = Config::home()?;
+            let cfg = match std::fs::read_to_string(home.join("config.yaml")) {
+                Ok(s) => Config::from_yaml(&s)?,
+                Err(_) => Config::default(),
+            };
+            agentfw::token::load_or_create(&home.join("token"))?;
+            println!(
+                "{}",
+                agentfw::install::instructions(cfg.port, &home.join("token"))
+            );
             Ok(())
         }
     }
