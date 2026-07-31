@@ -64,5 +64,6 @@ pub fn test_config(base: String) -> Config {
         stream_window: 64,
         normalize: config::NormalizeCfg::default(),
         agent_inspection: config::AgentInspection::default(),
+        output_moderation: config::OutputModeration::default(),
     }
 }
