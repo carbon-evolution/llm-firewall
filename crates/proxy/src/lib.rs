@@ -8,6 +8,7 @@ pub mod anthropic;
 pub mod audit;
 pub mod config;
 pub mod handlers;
+pub mod moderation;
 pub mod openai;
 pub mod pipeline;
 
