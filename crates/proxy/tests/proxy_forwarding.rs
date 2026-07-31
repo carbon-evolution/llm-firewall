@@ -30,6 +30,7 @@ async fn blocks_injection_before_upstream() {
         firewall: fw,
         http: reqwest::Client::new(),
         agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
+        moderation: llm_firewall::moderation::ModerationGate::new(Default::default()),
         config: test_config(server.uri()),
     });
 
@@ -74,6 +75,7 @@ async fn forwards_authorization_header_upstream() {
         firewall: fw,
         http: reqwest::Client::new(),
         agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
+        moderation: llm_firewall::moderation::ModerationGate::new(Default::default()),
         config: test_config(server.uri()),
     });
 
@@ -114,6 +116,7 @@ async fn forwards_benign_and_returns_upstream_body() {
         firewall: fw,
         http: reqwest::Client::new(),
         agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
+        moderation: llm_firewall::moderation::ModerationGate::new(Default::default()),
         config: test_config(server.uri()),
     });
 

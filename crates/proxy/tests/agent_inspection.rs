@@ -58,6 +58,7 @@ fn state(base: String, enabled: bool, enforce: bool) -> Arc<AppState> {
         firewall: fw,
         http: reqwest::Client::new(),
         agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
+        moderation: llm_firewall::moderation::ModerationGate::new(Default::default()),
         config,
     })
 }

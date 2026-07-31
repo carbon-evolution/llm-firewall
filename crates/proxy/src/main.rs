@@ -18,6 +18,7 @@ async fn main() -> anyhow::Result<()> {
         http: reqwest::Client::new(),
         config: cfg.clone(),
         agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
+        moderation: llm_firewall::moderation::ModerationGate::new(cfg.output_moderation.clone()),
     });
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;

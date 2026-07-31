@@ -25,6 +25,8 @@ pub struct AppState {
     /// Agent-layer firewall for tool-block inspection. Behind a Mutex because
     /// `inspect` takes `&mut self`. Only consulted when `agent_inspection.enabled`.
     pub agent: std::sync::Mutex<llm_firewall_agent::AgentFirewall>,
+    /// Output content moderation gate. `check` is a no-op unless enabled + `ml` + model.
+    pub moderation: crate::moderation::ModerationGate,
 }
 
 /// Run agent inspection over a response's tool calls against the request's tool
@@ -181,6 +183,21 @@ pub async fn chat_completions(
         }
     }
 
+    // Output content moderation: restrict a harmful reply regardless of backend.
+    // Non-streaming only (v1); `block` refuses, `flag` audits and forwards.
+    if !decision.request.stream {
+        if let crate::moderation::GateVerdict::Harmful { categories, action } =
+            state.moderation.check(assistant)
+        {
+            tracing::warn!(?categories, ?action, "output moderation: harmful reply");
+            if action == crate::config::ModerationAction::Block {
+                let msg = state.moderation.refusal_message().to_string();
+                audit_output_block(&request_id, &msg, started);
+                return (StatusCode::OK, Json(error_body(&msg))).into_response();
+            }
+        }
+    }
+
     audit_allow(
         &request_id,
         decision.score,
@@ -271,6 +288,20 @@ pub async fn messages(
         if let Some(reason) = agent_refuse_reason(&state, &request_id, results, calls) {
             audit_output_block(&request_id, &reason, started);
             return (StatusCode::BAD_GATEWAY, Json(anthropic_error_body(&reason))).into_response();
+        }
+    }
+
+    // Output content moderation (see the OpenAI path). Non-streaming only.
+    if !decision.request.stream {
+        if let crate::moderation::GateVerdict::Harmful { categories, action } =
+            state.moderation.check(&assistant)
+        {
+            tracing::warn!(?categories, ?action, "output moderation: harmful reply");
+            if action == crate::config::ModerationAction::Block {
+                let msg = state.moderation.refusal_message().to_string();
+                audit_output_block(&request_id, &msg, started);
+                return (StatusCode::OK, Json(anthropic_error_body(&msg))).into_response();
+            }
         }
     }
 
