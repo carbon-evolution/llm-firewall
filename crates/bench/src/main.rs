@@ -51,6 +51,11 @@ struct Cli {
     /// injection scorecard stays clean; enable to evaluate harmful-content datasets.
     #[arg(long, default_value_t = false)]
     moderation: bool,
+    /// Probability at/above which the moderation detector flags. Defaults to the
+    /// detector's own 0.5; the proxy's `output_moderation.threshold` ships at 0.8,
+    /// so pass `--moderation-threshold 0.8` to measure the deployed default.
+    #[arg(long, default_value_t = 0.5)]
+    moderation_threshold: f32,
     /// Disable the obfuscation/evasion normalization pre-pass (on by default). Use to
     /// measure the baseline vs. protected recall on obfuscated corpora.
     #[arg(long, default_value_t = false)]
@@ -83,6 +88,7 @@ impl From<DirectionArg> for Direction {
 fn core_guard(
     threshold: u8,
     moderation: bool,
+    moderation_threshold: f32,
     normalize: bool,
     base64: bool,
     direction: Direction,
@@ -121,6 +127,8 @@ fn core_guard(
     // harmful-content recall but adds over-defense on general traffic, so it must not
     // silently degrade the injection scorecard.
     if moderation {
+        #[cfg(not(feature = "ml"))]
+        let _ = moderation_threshold;
         #[cfg(feature = "ml")]
         match llm_firewall_core::ModerationClassifier::load_with_labels(
             "models/moderation",
@@ -130,7 +138,11 @@ fn core_guard(
                 eprintln!(
                     "Moderation: loaded models/moderation (harmful-content classifier active)"
                 );
-                detectors.push(Box::new(ModerationDetector::new().with_model(clf)));
+                detectors.push(Box::new(
+                    ModerationDetector::new()
+                        .with_model(clf)
+                        .with_threshold(moderation_threshold),
+                ));
             }
             Err(e) => eprintln!("Moderation: model unavailable ({e}); moderation disabled"),
         }
@@ -292,6 +304,7 @@ fn main() -> anyhow::Result<()> {
     let core = core_guard(
         cli.threshold,
         cli.moderation,
+        cli.moderation_threshold,
         !cli.no_normalize,
         cli.normalize_base64,
         cli.direction.into(),
