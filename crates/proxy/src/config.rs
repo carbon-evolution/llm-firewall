@@ -80,6 +80,60 @@ pub struct Config {
     pub normalize: NormalizeCfg,
     #[serde(default)]
     pub agent_inspection: AgentInspection,
+    #[serde(default)]
+    pub output_moderation: OutputModeration,
+}
+
+/// What to do when a model reply is judged harmful.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModerationAction {
+    /// Forward the response, but record the verdict + categories in the audit log.
+    Flag,
+    /// Refuse the response with a safe message; the client never sees the harmful text.
+    Block,
+}
+
+fn default_mod_threshold() -> f32 {
+    0.8
+}
+fn default_mod_model() -> String {
+    "models/moderation".into()
+}
+fn default_refusal() -> String {
+    "This response was withheld by the output content policy.".into()
+}
+
+/// Model-agnostic output content moderation: restrict harmful model replies regardless
+/// of backend. Off by default, and `flag`-first (audit without refusing) when enabled.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct OutputModeration {
+    /// Run the harmful-content classifier on model replies. Off by default.
+    pub enabled: bool,
+    /// What to do on a harmful reply. `flag` (default) audits; `block` refuses.
+    pub action: ModerationAction,
+    /// Classifier score at/above which a category counts as harmful.
+    pub threshold: f32,
+    /// Directory of the moderation model.
+    pub model_path: String,
+    /// Restrict to these harm categories (empty = every category the model emits).
+    pub categories: Vec<String>,
+    /// Refusal message returned to the client when `action: block`.
+    pub refusal_message: String,
+}
+
+impl Default for OutputModeration {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            action: ModerationAction::Flag,
+            threshold: default_mod_threshold(),
+            model_path: default_mod_model(),
+            categories: Vec::new(),
+            refusal_message: default_refusal(),
+        }
+    }
 }
 
 fn default_bind() -> String {
@@ -141,6 +195,28 @@ mod tests {
         assert_eq!(c.bind, "0.0.0.0:8080");
         assert_eq!(c.fail_mode, FailMode::FailClosed);
         assert_eq!(c.stream_window, 64);
+    }
+
+    #[test]
+    fn output_moderation_is_off_and_flag_first_by_default() {
+        let c = Config::from_yaml("upstream: {}").unwrap();
+        assert!(!c.output_moderation.enabled, "opt-in");
+        assert_eq!(
+            c.output_moderation.action,
+            ModerationAction::Flag,
+            "flag-first"
+        );
+    }
+
+    #[test]
+    fn output_moderation_parses_block_action() {
+        let c = Config::from_yaml(
+            "upstream: {}\noutput_moderation:\n  enabled: true\n  action: block\n  threshold: 0.9\n",
+        )
+        .unwrap();
+        assert!(c.output_moderation.enabled);
+        assert_eq!(c.output_moderation.action, ModerationAction::Block);
+        assert!((c.output_moderation.threshold - 0.9).abs() < 1e-6);
     }
 
     #[test]

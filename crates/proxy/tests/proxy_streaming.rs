@@ -27,6 +27,7 @@ async fn streams_benign_tokens() {
         firewall: fw,
         http: reqwest::Client::new(),
         agent: std::sync::Mutex::new(llm_firewall_agent::AgentFirewall::with_default_policy()),
+        moderation: llm_firewall::moderation::ModerationGate::new(Default::default()),
         config: test_config(server.uri()),
     });
 

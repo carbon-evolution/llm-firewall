@@ -14,6 +14,9 @@ path = "src/lib.rs"
 name = "llm-firewall"
 path = "src/main.rs"
 
+[features]
+ml = ["llm-firewall-core/ml"]
+
 [dependencies]
 llm-firewall-core = { path = "../core" }
 llm-firewall-agent = { path = "../agent" }

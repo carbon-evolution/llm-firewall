@@ -8,6 +8,7 @@ pub mod anthropic;
 pub mod audit;
 pub mod config;
 pub mod handlers;
+pub mod moderation;
 pub mod openai;
 pub mod pipeline;
 
@@ -64,5 +65,6 @@ pub fn test_config(base: String) -> Config {
         stream_window: 64,
         normalize: config::NormalizeCfg::default(),
         agent_inspection: config::AgentInspection::default(),
+        output_moderation: config::OutputModeration::default(),
     }
 }

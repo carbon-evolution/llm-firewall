@@ -15,7 +15,8 @@ use clap::Parser;
 #[cfg(feature = "ml")]
 use llm_firewall_core::ModerationDetector;
 use llm_firewall_core::{
-    Firewall, InjectionDetector, Normalizer, OutputDetector, PiiDetector, PolicySet, SecretDetector,
+    Direction, Firewall, InjectionDetector, Normalizer, OutputDetector, PiiDetector, PolicySet,
+    SecretDetector,
 };
 
 use crate::evaluate::{evaluate, CoreGuard, EvalResult, Guard};
@@ -50,6 +51,11 @@ struct Cli {
     /// injection scorecard stays clean; enable to evaluate harmful-content datasets.
     #[arg(long, default_value_t = false)]
     moderation: bool,
+    /// Probability at/above which the moderation detector flags. Defaults to the
+    /// detector's own 0.5; the proxy's `output_moderation.threshold` ships at 0.8,
+    /// so pass `--moderation-threshold 0.8` to measure the deployed default.
+    #[arg(long, default_value_t = 0.5)]
+    moderation_threshold: f32,
     /// Disable the obfuscation/evasion normalization pre-pass (on by default). Use to
     /// measure the baseline vs. protected recall on obfuscated corpora.
     #[arg(long, default_value_t = false)]
@@ -57,11 +63,40 @@ struct Cli {
     /// Also enable the base64-decode normalization tier (opt-in; off by default).
     #[arg(long, default_value_t = false)]
     normalize_base64: bool,
+    /// Which path to evaluate: `input` (prompt corpora, the default) or `output`
+    /// (corpora of model *replies*, e.g. output moderation). Mirrors the direction
+    /// the proxy stamps, so direction-scoped policy rules are measured honestly.
+    #[arg(long, default_value = "input")]
+    direction: DirectionArg,
 }
 
-fn core_guard(threshold: u8, moderation: bool, normalize: bool, base64: bool) -> CoreGuard {
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum DirectionArg {
+    Input,
+    Output,
+}
+
+impl From<DirectionArg> for Direction {
+    fn from(d: DirectionArg) -> Self {
+        match d {
+            DirectionArg::Input => Direction::Input,
+            DirectionArg::Output => Direction::Output,
+        }
+    }
+}
+
+fn core_guard(
+    threshold: u8,
+    moderation: bool,
+    moderation_threshold: f32,
+    normalize: bool,
+    base64: bool,
+    direction: Direction,
+) -> CoreGuard {
+    // Mirrors the shipped `policies/default.yaml`: the injection rules are scoped to
+    // `input` there, so the bench must scope them too or it measures rules nobody runs.
     let policy = PolicySet::from_yaml(
-        "policies:\n  - name: block-injection-high\n    when: { detector: injection, min_severity: high }\n    action: block\n  - name: block-ml-positive\n    when: { detector: injection.ml }\n    action: block\n  - name: block-moderation\n    when: { detector: moderation }\n    action: block\ndefault: allow\n",
+        "policies:\n  - name: block-injection-high\n    when: { detector: injection, min_severity: high, direction: input }\n    action: block\n  - name: block-ml-positive\n    when: { detector: injection.ml, direction: input }\n    action: block\n  - name: block-moderation\n    when: { detector: moderation }\n    action: block\ndefault: allow\n",
     )
     .expect("builtin policy");
     // With the `ml` feature, attach the DeBERTa Stage-C classifier when its asset is
@@ -92,6 +127,8 @@ fn core_guard(threshold: u8, moderation: bool, normalize: bool, base64: bool) ->
     // harmful-content recall but adds over-defense on general traffic, so it must not
     // silently degrade the injection scorecard.
     if moderation {
+        #[cfg(not(feature = "ml"))]
+        let _ = moderation_threshold;
         #[cfg(feature = "ml")]
         match llm_firewall_core::ModerationClassifier::load_with_labels(
             "models/moderation",
@@ -101,7 +138,11 @@ fn core_guard(threshold: u8, moderation: bool, normalize: bool, base64: bool) ->
                 eprintln!(
                     "Moderation: loaded models/moderation (harmful-content classifier active)"
                 );
-                detectors.push(Box::new(ModerationDetector::new().with_model(clf)));
+                detectors.push(Box::new(
+                    ModerationDetector::new()
+                        .with_model(clf)
+                        .with_threshold(moderation_threshold),
+                ));
             }
             Err(e) => eprintln!("Moderation: model unavailable ({e}); moderation disabled"),
         }
@@ -119,6 +160,7 @@ fn core_guard(threshold: u8, moderation: bool, normalize: bool, base64: bool) ->
     CoreGuard {
         firewall,
         threshold,
+        direction,
     }
 }
 
@@ -262,8 +304,10 @@ fn main() -> anyhow::Result<()> {
     let core = core_guard(
         cli.threshold,
         cli.moderation,
+        cli.moderation_threshold,
         !cli.no_normalize,
         cli.normalize_base64,
+        cli.direction.into(),
     );
 
     if let Some(path) = &cli.report {
