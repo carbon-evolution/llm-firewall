@@ -68,8 +68,10 @@ A pure-Rust **firewall for LLMs and the agents built on them**. Two layers, one 
   by direction (input vs. output).
 - **Standards mapping** — every finding is auto-tagged with its **OWASP LLM Top 10 (2025)** category
   and **MITRE ATLAS** technique; the harness emits an OWASP coverage/risk report (`--report`).
-- **Response scanning + streaming** — inspects model output too, including SSE token streams
-  (verbatim byte passthrough with a sliding-window scan).
+- **Response scanning + streaming** — inspects model output too, including SSE token streams: events
+  are parsed, the reply text and tool-call arguments are reassembled per choice / content block and
+  scanned with the same output policy, and a small hold-back window keeps a secret split across delta
+  frames from reaching the client (clean streams are forwarded byte-for-byte).
 - **Structured audit log** — one JSON line per request (decision, score, reasons, OWASP/ATLAS tags,
   latency).
 
@@ -608,8 +610,10 @@ It works **per request/response cycle with no state**: every API request re-send
 conversation, so the request's `tool_result` blocks build the taint set and the model response's
 `tool_use` blocks are the actions checked against it. The blockable moment is the **response** — before a
 response carrying a denied tool call reaches the client, the proxy refuses it. Off by default and
-**shadow-first** (`enforce: false` audits without altering); non-streaming responses only in v1 (streamed
-`tool_use` is a documented gap — the text layer's sliding-window scan still applies).
+**shadow-first** (`enforce: false` audits without altering). Streamed responses are covered too: the
+tool calls are reassembled from the deltas and inspected at the end of the stream; with `enforce: true`
+the stream is held from the first tool-call event until that verdict, so a denied call is never
+released.
 
 ```yaml
 agent_inspection:
@@ -734,7 +738,7 @@ docker buildx imagetools inspect "ghcr.io/carbon-evolution/llm-firewall:${TAG#v}
 ## Configuration
 
 `firewall.yaml` sets the bind address, upstream base URLs, policy file, fail mode (`fail_closed`
-default), and stream window. Env overrides: `LLM_FW_BIND`, `LLM_FW_OPENAI_BASE`,
+default), and the streaming hold-back (`stream_holdback_bytes`). Env overrides: `LLM_FW_BIND`, `LLM_FW_OPENAI_BASE`,
 `LLM_FW_ANTHROPIC_BASE`. Policies live in `policies/*.yaml` — see `policies/default.yaml`. The agent
 layer ships its own default at `crates/agent/policies/agent-default.yaml`.
 
@@ -743,7 +747,13 @@ upstream:
   openai_base: https://api.openai.com      # /v1/chat/completions target
   anthropic_base: https://api.anthropic.com # /v1/messages target
 
-output_moderation:          # off by default
+# Streaming: bytes of reassembled reply text held back (per choice / content block) until scanned
+# in context. Must cover the longest pattern that has to be caught before any part of it is sent.
+# Trade-off: the client sees text ~this many bytes (~60 tokens at 256) behind the upstream.
+# Default 256, floor 64. (`stream_window` is deprecated and ignored.)
+stream_holdback_bytes: 256
+
+output_moderation:          # off by default; with action: block, streams are held in full
   enabled: false
   action: flag              # flag = forward + audit; block = withhold the reply
   threshold: 0.8            # probability at/above which a reply is judged harmful

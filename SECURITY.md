@@ -162,8 +162,8 @@ OpenAI content-part arrays and scan their `text` parts; consider a joined-conver
 - ⚠️ **Output inspection gaps (verified):** only `choices[0].message.content` (OpenAI) and text blocks
   (Anthropic) are scanned (`crates/proxy/src/handlers.rs:167-170`, `266-280`). Secrets in additional
   choices (when the client requests `n > 1`), in `tool_calls` arguments / `tool_use` input, or in
-  **non-200 upstream bodies** (forwarded unscanned, `handlers.rs:163-165`) reach the client. Streaming
-  output is covered only partially (see A06).
+  **non-200 upstream bodies** (forwarded unscanned, `handlers.rs:163-165`) reach the client. (Streamed
+  replies are now reassembled and scanned per choice, tool-call arguments included — see A06.)
 - ⚠️ PII masking applies to input only: `decide_output` acts on `block` alone
   (`crates/proxy/src/pipeline.rs:177-188`), so `mask-pii` never redacts PII in a reply.
 - ⚠️ No provider-specific patterns for OpenAI (`sk-…`) or Anthropic (`sk-ant-…`) keys; they rely on the
@@ -234,8 +234,8 @@ startup when a configured model cannot load.
   `block-dangerous-output`; the phase 14 control check shows each artifact blocks at High/Critical.
 - ✅ Injection rules are scoped to `direction: input` after phase 13 found they over-blocked 16% of
   legitimate security answers on replies (README "What this phase fixed").
-- ⚠️ Same coverage gaps as LLM02: additional choices, tool-call arguments, non-200 bodies and streamed
-  replies (A06) are not fully inspected.
+- ⚠️ Same coverage gaps as LLM02: additional choices, tool-call arguments and non-200 bodies of
+  non-streamed replies are not fully inspected. (Streamed replies: fixed, see A06.)
 - ⚠️ Documented limit (phase 14 plan): harmful operational *prose* with no executable artifact is covered
   only by the opt-in moderation model, which caught 84.0% at threshold 0.8 with 0.0% over-block; the
   worst case scored 0.467 and evades at both 0.8 and 0.5.
@@ -259,7 +259,7 @@ completion carrying the refusal text) for moderation blocks.
 - ✅ Optional local judge tier: 100% / 4% FP on a 50-sample corpus, tighten-only, loopback-only.
 - ⚠️ Everything is opt-in and shadow-first: `agentfw` defaults to `enforce: false`; the proxy's
   `agent_inspection` is off and, when on, shadow-only unless `enforce: true`
-  (`crates/proxy/src/config.rs`), and it runs on non-streaming responses only. Out of the box the proxy
+  (`crates/proxy/src/config.rs`). (It now also covers streamed responses — see A06.) Out of the box the proxy
   enforces nothing at the tool boundary.
 - ⚠️ Documented judge limit: an injection after the first 4 KB of a page is not seen
   (`max_span_bytes: 4096`).
@@ -270,7 +270,7 @@ completion carrying the refusal text) for moderation blocks.
   loopback with exact host matching (`crates/agentfw/src/config.rs`, `token.rs`).
 - ⚠️ `agentfw` fails open on internal errors and on bodies over the cap (by design, documented).
 
-**Recommended:** document an "enforce" deployment profile; extend proxy agent inspection to streams;
+**Recommended:** document an "enforce" deployment profile;
 pursue the span-cache fix the judge design already identifies.
 
 ### LLM07 — System Prompt Leakage · 🟠 Medium
@@ -389,12 +389,22 @@ non-loopback deployments.
 
 The proxy's security function has design-level gaps where traffic passes without the inspection the
 documentation describes. Each was reproduced against the release build with a mock upstream.
-- ⚠️ **Streamed output is not reliably inspected.** The SSE scanner matches against the raw upstream
-  bytes (JSON frames included) in a tail window of `stream_window × 4` = 256 bytes
-  (`crates/proxy/src/handlers.rs:382-398`), rather than against the reassembled assistant text. A
-  secret delivered across several delta frames was forwarded to the client and the stream logged
-  `stream_done`. Each chunk is also forwarded right after the scan, so earlier chunks have already been
-  delivered when a block fires. Output moderation and agent inspection do not run on streams at all.
+- ✅ **Streamed output is inspected on the reassembled text — fixed in this PR (`fix/stream-inspection`).**
+  *Was:* the SSE scanner matched raw upstream bytes (JSON frames included) in a 256-byte tail window and
+  forwarded each chunk right after its scan, so a secret split across delta frames reached the client;
+  moderation and agent inspection did not run on streams. *Now* (`crates/proxy/src/stream.rs`): SSE
+  events are parsed incrementally; reply text, tool-call arguments (OpenAI `delta.tool_calls`,
+  Anthropic `input_json_delta`) and thinking are reassembled per choice / content block and scanned
+  with the same output policy as non-streamed replies; an event is released only once its text is
+  `stream_holdback_bytes` (default 256) older than the newest text and has been scanned in context, so
+  no part of a match up to that length is ever sent; each channel gets a full scan when it finishes.
+  A block ends the stream with a protocol-native error event and drops the upstream. Agent inspection
+  runs on the reassembled tool calls (held until the verdict when enforcing) and output moderation on
+  the reassembled reply (streams held in full when `action: block`). Regression tests: split AWS key
+  over 3+ OpenAI / Anthropic delta frames, split tool-call arguments, clean byte-for-byte passthrough.
+  Residual: a match longer than the hold-back (e.g. a risk score that only crosses the threshold over
+  the whole reply) is caught at the channel's final scan, after its start may have been released;
+  output `mask` actions are not applied to replies (same as non-streamed, LLM02).
 - ⚠️ **Partial response inspection** — only the first choice's text (LLM02).
 - ⚠️ **Partial request inspection** — Anthropic `tool_result`/`document` blocks and tool definitions are
   not scanned (LLM01).
@@ -402,10 +412,9 @@ documentation describes. Each was reproduced against the release build with a mo
 - ✅ Good design elsewhere: fail-closed default, dual-scan normalization (obfuscation alone is never a
   block reason), direction-scoped policies, tighten-only judge, shadow-first rollout of new enforcement.
 
-**Recommended:** reassemble streamed deltas per choice (parse SSE events, accumulate `delta.content` /
-`content_block_delta` text) and scan the accumulated text with overlap, holding back a small tail
-before release; treat "every text-bearing field is inspected" as an invariant with tests per API
-shape; add a regression test for each gap above.
+**Recommended:** treat "every text-bearing field is inspected" as an invariant with tests per API
+shape; add a regression test for each remaining gap above. (A06 stays High here only because of the
+ML-wiring item, fixed separately.)
 
 ### A07 — Authentication Failures · 🟢 Low
 
@@ -433,14 +442,14 @@ shape; add a regression test for each gap above.
 - ✅ One structured JSON audit record per decision with score, reason labels, OWASP LLM and MITRE ATLAS
   tags and latency (`crates/proxy/src/audit.rs`); verified to exclude prompt text, secrets and
   credentials. `agentfw` keeps an append-only `0600` JSONL audit log with `replay` tooling.
-- ⚠️ **Streaming requests get no input audit record** (the stream path returns before `audit_allow`,
-  `handlers.rs:138-152`); only an output `stream_done`/`block` line is written.
+- ✅ Streaming requests now get the same input audit record as non-streaming ones, written before the
+  stream starts, plus an output `stream_done` / `stream_error` / `block` record (fixed in this PR).
 - ⚠️ Non-200 upstream responses and requests rejected before the handler (413, 415, 422, 400 parse
   errors) are not audited.
 - ⚠️ Records carry no client identity (address or key fingerprint), the `req-N` counter restarts with the
   process and is not returned to the client, and there is no metrics/alerting hook.
 
-**Recommended:** audit every request outcome, including streams and rejections; add a client
+**Recommended:** audit every request outcome, including rejections; add a client
 identifier (hashed key or address), a UUID request id echoed in a response header, and counters for
 blocks by rule.
 

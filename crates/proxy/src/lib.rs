@@ -11,6 +11,7 @@ pub mod handlers;
 pub mod moderation;
 pub mod openai;
 pub mod pipeline;
+pub mod stream;
 
 use axum::{routing::post, Router};
 use llm_firewall_core::{
@@ -63,6 +64,7 @@ pub fn test_config(base: String) -> Config {
         policy_file: None,
         fail_mode: FailMode::FailClosed,
         stream_window: 64,
+        stream_holdback_bytes: 256,
         normalize: config::NormalizeCfg::default(),
         agent_inspection: config::AgentInspection::default(),
         output_moderation: config::OutputModeration::default(),

@@ -74,8 +74,15 @@ pub struct Config {
     pub policy_file: Option<String>,
     #[serde(default = "default_fail")]
     pub fail_mode: FailMode,
+    /// Deprecated and ignored (the old raw-byte stream scan window). Still accepted so
+    /// existing config files keep parsing; use `stream_holdback_bytes`.
     #[serde(default = "default_window")]
     pub stream_window: usize,
+    /// Streaming: bytes of reassembled reply text held back per channel until they have
+    /// been scanned in context. Must be at least the longest pattern you need caught
+    /// before any part of it reaches the client. Floor: [`MIN_STREAM_HOLDBACK`].
+    #[serde(default = "default_holdback")]
+    pub stream_holdback_bytes: usize,
     #[serde(default)]
     pub normalize: NormalizeCfg,
     #[serde(default)]
@@ -151,6 +158,14 @@ fn default_fail() -> FailMode {
 fn default_window() -> usize {
     64
 }
+/// Default stream hold-back: comfortably longer than every fixed-length built-in
+/// secret / output pattern (the longest, a Slack token or PEM header, is < 60 bytes).
+fn default_holdback() -> usize {
+    256
+}
+/// Smallest accepted hold-back; lower values are raised to this.
+pub const MIN_STREAM_HOLDBACK: usize = 64;
+
 fn default_true() -> bool {
     true
 }
@@ -165,6 +180,11 @@ impl Default for Upstream {
 }
 
 impl Config {
+    /// The stream hold-back actually used (`stream_holdback_bytes`, floored).
+    pub fn effective_holdback(&self) -> usize {
+        self.stream_holdback_bytes.max(MIN_STREAM_HOLDBACK)
+    }
+
     pub fn from_yaml(s: &str) -> anyhow::Result<Self> {
         let mut cfg: Config = serde_saphyr::from_str(s)?;
         cfg.apply_env();
@@ -195,6 +215,16 @@ mod tests {
         assert_eq!(c.bind, "0.0.0.0:8080");
         assert_eq!(c.fail_mode, FailMode::FailClosed);
         assert_eq!(c.stream_window, 64);
+        assert_eq!(c.stream_holdback_bytes, 256);
+        assert_eq!(c.effective_holdback(), 256);
+    }
+
+    #[test]
+    fn stream_holdback_parses_and_is_floored() {
+        let c = Config::from_yaml("upstream: {}\nstream_holdback_bytes: 1024\n").unwrap();
+        assert_eq!(c.effective_holdback(), 1024);
+        let c = Config::from_yaml("upstream: {}\nstream_holdback_bytes: 8\n").unwrap();
+        assert_eq!(c.effective_holdback(), MIN_STREAM_HOLDBACK);
     }
 
     #[test]
