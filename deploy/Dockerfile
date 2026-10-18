@@ -2,7 +2,7 @@
 # proposes digest and minor bumps, major Rust/Debian jumps are deliberate.
 
 # Build
-FROM rust:1.96@sha256:1f0dbad1df66647807e6952d1db85d0b2bda7606cb2139d82517e4f009967376 AS build
+FROM rust:1.98@sha256:a8a5f0a1e5fe7dfe1d352591e4a1c7dd2c08fd70475cae872cf3458ba0df0546 AS build
 WORKDIR /src
 COPY . .
 RUN cargo build --release -p llm-firewall
