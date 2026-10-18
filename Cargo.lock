@@ -1542,7 +1542,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
 name = "llm-firewall"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -1563,7 +1563,7 @@ dependencies = [
 
 [[package]]
 name = "llm-firewall-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "llm-firewall-core",
  "regex",
@@ -1574,7 +1574,7 @@ dependencies = [
 
 [[package]]
 name = "llm-firewall-bench"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1587,7 +1587,7 @@ dependencies = [
 
 [[package]]
 name = "llm-firewall-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
