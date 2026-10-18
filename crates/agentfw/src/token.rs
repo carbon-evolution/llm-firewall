@@ -7,13 +7,12 @@
 
 use std::path::Path;
 
-use rand::RngCore;
 use subtle::ConstantTimeEq;
 
 /// 256 bits of randomness, base64url without padding.
 pub fn generate() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::fill(&mut bytes);
     base64url(&bytes)
 }
 
