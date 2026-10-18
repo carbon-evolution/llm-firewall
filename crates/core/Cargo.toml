@@ -11,7 +11,7 @@ regex.workspace = true
 serde = { workspace = true }
 serde-saphyr = "2.0"
 unicode-normalization = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 
 # Optional ML dependencies (off by default; enabled via the `ml` feature).
 candle-core = { version = "0.8", optional = true }
