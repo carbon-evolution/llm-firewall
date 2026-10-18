@@ -1,0 +1,1 @@
+{"server":"github","tools":[{"name":"b","description":"second","schema":{"type":"object","required":["x"]}},{"name":"a","description":"first","schema":{"properties":{"z":1,"y":[1,2]},"type":"object"}}]}

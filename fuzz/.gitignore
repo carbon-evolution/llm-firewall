@@ -1,0 +1,6 @@
+target
+artifacts
+coverage
+# Local working corpora (libFuzzer writes new inputs to the FIRST corpus dir given;
+# docs/fuzzing.md runs with a scratch dir first so the committed seeds stay small).
+corpus-work

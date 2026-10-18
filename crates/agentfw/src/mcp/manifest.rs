@@ -28,15 +28,28 @@ fn canonical(v: &serde_json::Value) -> serde_json::Value {
 /// name, description, and canonicalized schema. Reordering does not matter; any
 /// content change does.
 pub fn manifest_hash(tools: &[ToolDecl]) -> String {
-    let mut sorted: Vec<&ToolDecl> = tools.iter().collect();
-    sorted.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort by the full canonical content, not just the name: a manifest that repeats
+    // a tool name would otherwise hash differently depending on the order the server
+    // listed the duplicates in (found by the `mcp_manifest` fuzz target). For
+    // manifests with unique names this is the same order as before, so existing pins
+    // are unaffected.
+    let mut sorted: Vec<(&ToolDecl, String)> = tools
+        .iter()
+        .map(|t| (t, canonical(&t.schema).to_string()))
+        .collect();
+    sorted.sort_by(|(a, sa), (b, sb)| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.description.cmp(&b.description))
+            .then_with(|| sa.cmp(sb))
+    });
     let mut h = Sha256::new();
-    for t in sorted {
+    for (t, schema) in sorted {
         h.update(t.name.as_bytes());
         h.update([0u8]);
         h.update(t.description.as_bytes());
         h.update([0u8]);
-        h.update(canonical(&t.schema).to_string().as_bytes());
+        h.update(schema.as_bytes());
         h.update([0u8]);
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
@@ -92,6 +105,25 @@ mod tests {
         let a = vec![tool("a", "one"), tool("b", "two")];
         let b = vec![tool("b", "two"), tool("a", "one")];
         assert_eq!(manifest_hash(&a), manifest_hash(&b));
+    }
+
+    #[test]
+    fn reordering_duplicate_tool_names_does_not_change_the_hash() {
+        // Found by the `mcp_manifest` fuzz target: two tools sharing a name used to
+        // hash in input order, so a server re-listing them raised a false drift alert.
+        let a = vec![tool("dup", "one"), tool("dup", "two"), tool("x", "")];
+        let b = vec![tool("x", ""), tool("dup", "two"), tool("dup", "one")];
+        assert_eq!(manifest_hash(&a), manifest_hash(&b));
+    }
+
+    #[test]
+    fn hash_of_a_unique_name_manifest_is_unchanged() {
+        // Pins persisted before the duplicate-name fix must still match.
+        let a = vec![tool("b", "two"), tool("a", "one")];
+        assert_eq!(
+            manifest_hash(&a),
+            "89fbced8af075804669238a1ca78c7d170c83bb142572f3acf086f0991125058"
+        );
     }
 
     #[test]
