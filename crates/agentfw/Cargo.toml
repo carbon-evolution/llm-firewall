@@ -27,7 +27,7 @@ tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 anyhow = "1"
 rand = "0.10"
 subtle = "2"
-dirs = "5"
+dirs = "7"
 clap = { version = "4", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 sha2 = "0.11"
