@@ -7,3 +7,6 @@
 # Benchmark corpora + raw output -- regenerated via scripts/fetch-datasets.sh + the bench CLI
 /datasets
 /results*.json
+
+# Release archives built locally by scripts/package-release.sh
+/dist
