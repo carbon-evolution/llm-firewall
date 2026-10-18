@@ -38,6 +38,7 @@ A pure-Rust **firewall for LLMs and the agents built on them**. Two layers, one 
 - [How the agent firewall works](#how-the-agent-firewall-works)
 - [Prerequisites](#prerequisites--what-you-need-beforehand)
 - [How to use it](#how-to-use-it)
+- [Verifying a release](#verifying-a-release)
 - [Configuration](#configuration)
 - [Benchmark scorecard](#benchmark-scorecard)
 - [Output moderation](#output-moderation--the-model-agnostic-enforcement-point)
@@ -409,6 +410,10 @@ docker build -f deploy/Dockerfile -t llm-firewall .
 docker run -p 8080:8080 -e LLM_FW_OPENAI_BASE=https://api.openai.com llm-firewall
 ```
 
+**Prebuilt binaries** — from v0.3.0 on, each [GitHub Release](https://github.com/carbon-evolution/llm-firewall/releases)
+has signed `llm-firewall` + `agentfw` archives for Linux and macOS (x86_64 and arm64). Verify before
+running: see [Verifying a release](#verifying-a-release).
+
 **From source:**
 
 ```bash
@@ -650,6 +655,78 @@ match outcome.verdict {
 `Outcome` carries the verdict, the rule name, the human-readable message, every `Finding` with its
 OWASP/ATLAS tags, the taint mark (including which source introduced it), the risk score, and the
 egress hosts — everything a daemon needs to write an audit line or render an approval prompt.
+
+---
+
+## Verifying a release
+
+Every `v*` tag is built and published by [`.github/workflows/release.yml`](.github/workflows/release.yml).
+The GitHub Release for the tag carries:
+
+| Asset | What it is |
+|---|---|
+| `llm-firewall-vX.Y.Z-<target>.tar.gz` | `llm-firewall` + `agentfw` binaries, `firewall.yaml`, `policies/`, LICENSE, README, CHANGELOG. Targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` (glibc ≥ 2.35), `x86_64-apple-darwin`, `aarch64-apple-darwin` |
+| `llm-firewall-vX.Y.Z.cdx.json`, `agentfw-vX.Y.Z.cdx.json` | CycloneDX 1.5 SBOMs of each binary's Rust dependency tree |
+| `SHA256SUMS` | SHA-256 of every archive and SBOM |
+| `<file>.sigstore.json` | Keyless [Sigstore](https://docs.sigstore.dev/) signature bundle for each archive, SBOM and `SHA256SUMS` (certificate + signature + Rekor transparency-log proof) |
+| `llm-firewall-vX.Y.Z.intoto.jsonl` | [SLSA](https://slsa.dev/) v1 build provenance (Build L3, from `slsa-github-generator`) covering every archive and SBOM |
+
+The signatures are *keyless*: there is no project key to trust or leak. Each certificate is issued
+to this repository's release workflow at that exact tag by GitHub's OIDC identity, so verification
+checks *who built it, from which workflow and tag*. Needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+v2.4+ and, for provenance, [slsa-verifier](https://github.com/slsa-framework/slsa-verifier#installation).
+
+```bash
+TAG=v0.3.0
+TARGET=x86_64-unknown-linux-gnu    # or aarch64-unknown-linux-gnu, x86_64-apple-darwin, aarch64-apple-darwin
+ARCHIVE="llm-firewall-${TAG}-${TARGET}.tar.gz"
+
+gh release download "${TAG}" -R carbon-evolution/llm-firewall \
+  -p "${ARCHIVE}" -p "${ARCHIVE}.sigstore.json" -p 'SHA256SUMS*' -p '*.intoto.jsonl'
+# (or download the same files from the release page)
+
+# 1. Signature: the archive was signed by this repo's release workflow at this tag.
+cosign verify-blob \
+  --bundle "${ARCHIVE}.sigstore.json" \
+  --certificate-identity "https://github.com/carbon-evolution/llm-firewall/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  "${ARCHIVE}"
+
+# 2. Checksums: verify the signed SHA256SUMS, then the archive against it.
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity "https://github.com/carbon-evolution/llm-firewall/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing      # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+
+# 3. Provenance: built by the SLSA generator from this repo at this tag.
+slsa-verifier verify-artifact "${ARCHIVE}" \
+  --provenance-path "llm-firewall-${TAG}.intoto.jsonl" \
+  --source-uri github.com/carbon-evolution/llm-firewall \
+  --source-tag "${TAG}"
+
+tar xzf "${ARCHIVE}" && cd "llm-firewall-${TAG}-${TARGET}" && ./llm-firewall
+```
+
+The same `cosign verify-blob` command verifies an SBOM (`llm-firewall-${TAG}.cdx.json` with its
+`.sigstore.json`). The macOS binaries are not Apple-notarized; a copy downloaded through a browser
+may need `xattr -d com.apple.quarantine llm-firewall agentfw`.
+
+**Container image** — signed keylessly by the same workflow, with SLSA provenance and an SBOM
+attached as registry attestations:
+
+```bash
+cosign verify "ghcr.io/carbon-evolution/llm-firewall:${TAG#v}" \
+  --certificate-identity "https://github.com/carbon-evolution/llm-firewall/.github/workflows/release.yml@refs/tags/${TAG}" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+# inspect the attached provenance / SBOM:
+docker buildx imagetools inspect "ghcr.io/carbon-evolution/llm-firewall:${TAG#v}" --format '{{ json .Provenance }}'
+```
+
+> **v0.1.0 and v0.2.0 predate release signing:** they have no binary assets, and their images are
+> unsigned. The first release with signed archives, SBOMs and provenance is the first tag cut after
+> this workflow landed (v0.3.0); build older versions from source.
 
 ---
 

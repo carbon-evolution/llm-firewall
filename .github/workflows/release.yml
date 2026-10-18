@@ -1,6 +1,13 @@
 name: release
 
-# Build, publish and sign the container image on GitHub Packages (GHCR) on a version tag.
+# On a version tag:
+#  - container: build, publish and keyless-sign the image on GHCR (SLSA provenance + SBOM
+#    attached as attestations);
+#  - binaries -> sbom -> sign -> provenance -> publish: build release archives, CycloneDX
+#    SBOMs and SHA256SUMS, sign each with a keyless Sigstore bundle (*.sigstore.json),
+#    generate SLSA v1 build provenance (*.intoto.jsonl), and publish them all as assets of
+#    the GitHub Release for the tag. Verification commands: README, "Verifying a release".
+# A workflow_dispatch run (re)publishes the image only; release assets need a v* tag ref.
 on:
   push:
     tags: ["v*"]
@@ -79,3 +86,233 @@ jobs:
             --certificate-identity "${IDENTITY}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com > /dev/null
           echo "Signature verified for ${IMAGE}@${DIGEST}"
+
+  # Release archives, one per target, each built natively on a runner of that OS/arch.
+  # Linux builds use the oldest supported Ubuntu (22.04, glibc 2.35) so the binaries also
+  # run on Debian 12 / RHEL 9-era hosts; the darwin x86_64 build cross-compiles on the
+  # arm64 macOS runner (Xcode SDK; the TLS stack is rustls/ring, no OpenSSL).
+  binaries:
+    if: startsWith(github.ref, 'refs/tags/v')
+    name: binaries (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain has no release tags; pinned to a master commit.
+      # No build cache here: release binaries are built from a clean state.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Check the tag matches the workspace crate versions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          versions="$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[].version' | sort -u)"
+          if [ "v${versions}" != "${TAG}" ]; then
+            echo "::error::tag ${TAG} does not match the workspace crate version(s): ${versions//$'\n'/ }"
+            exit 1
+          fi
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "${TARGET}" -p llm-firewall -p agentfw
+
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: scripts/package-release.sh "${TAG}" "${TARGET}" dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # CycloneDX SBOMs of the Rust dependency tree of each shipped binary (default features,
+  # all release targets), resolved by cargo rather than inferred from Cargo.lock.
+  sbom:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16
+        with:
+          toolchain: stable
+      # The pinned prebuilt binary is checksum-verified by install-action.
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-cyclonedx@0.5.9
+
+      - name: Generate CycloneDX SBOMs
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          export SOURCE_DATE_EPOCH
+          cargo cyclonedx --format json --spec-version 1.5 --target all
+          mkdir -p dist
+          cp crates/proxy/llm-firewall.cdx.json "dist/llm-firewall-${TAG}.cdx.json"
+          cp crates/agentfw/agentfw.cdx.json "dist/agentfw-${TAG}.cdx.json"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom
+          path: dist/*.cdx.json
+          if-no-files-found: error
+          retention-days: 7
+
+  # Checksums and keyless Sigstore signatures. Each file gets a <file>.sigstore.json bundle
+  # (certificate + signature + Rekor inclusion proof) binding it to this workflow at this
+  # tag through GitHub's OIDC identity. No contents: write here.
+  sign:
+    needs: [binaries, sbom]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # keyless Sigstore signing via GitHub OIDC
+    outputs:
+      hashes: ${{ steps.checksums.outputs.hashes }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: dist
+
+      - name: Checksums
+        id: checksums
+        working-directory: dist
+        run: |
+          sha256sum -- *.tar.gz *.cdx.json > SHA256SUMS
+          cat SHA256SUMS
+          # SLSA provenance subjects: the same list, base64-encoded.
+          echo "hashes=$(base64 -w0 < SHA256SUMS)" >> "${GITHUB_OUTPUT}"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the release files
+        working-directory: dist
+        run: |
+          for f in *.tar.gz *.cdx.json SHA256SUMS; do
+            cosign sign-blob --yes --bundle "${f}.sigstore.json" "${f}" > /dev/null
+          done
+
+      - name: Verify the signatures
+        working-directory: dist
+        env:
+          IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/release.yml@${{ github.ref }}
+        run: |
+          for f in *.tar.gz *.cdx.json SHA256SUMS; do
+            cosign verify-blob --bundle "${f}.sigstore.json" \
+              --certificate-identity "${IDENTITY}" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              "${f}"
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # SLSA v1 build provenance for every archive and SBOM, signed keylessly by the SLSA
+  # generic generator (SLSA Build L3), emitted as llm-firewall-<tag>.intoto.jsonl.
+  # The reusable workflow is referenced by an exact release tag, not a SHA: the generator
+  # identifies itself (the trusted builder) from that ref and slsa-verifier checks it, so
+  # SHA references are not supported. Scorecard's Pinned-Dependencies check exempts
+  # slsa-framework/slsa-github-generator for this reason.
+  provenance:
+    needs: [sign]
+    permissions:
+      actions: read # read the workflow run
+      id-token: write # sign the provenance
+      # The generator's nested upload job declares contents: write, so the caller must
+      # allow it; with upload-assets: false that job never runs. The publish job below
+      # attaches the provenance together with the other assets.
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.sign.outputs.hashes }}
+      provenance-name: llm-firewall-${{ github.ref_name }}.intoto.jsonl
+      upload-assets: false
+
+  # The only job that writes to the repository: create (or update) the GitHub Release
+  # for the tag and attach every asset in one place.
+  publish:
+    needs: [container, sign, provenance]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.provenance.outputs.provenance-name }}
+          path: dist
+
+      - name: Check the assets before publishing
+        working-directory: dist
+        run: |
+          sha256sum -c SHA256SUMS
+          for f in *.tar.gz *.cdx.json SHA256SUMS; do
+            test -s "${f}.sigstore.json" || { echo "::error::missing ${f}.sigstore.json"; exit 1; }
+          done
+          ls -l
+
+      - name: Release notes
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: scripts/release-notes.sh "${TAG}" "${REPO}" > notes.md
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          case "${TAG}" in *-*) flags+=(--prerelease) ;; esac
+          if gh release view "${TAG}" > /dev/null 2>&1; then
+            gh release edit "${TAG}" --notes-file notes.md "${flags[@]}"
+            gh release upload "${TAG}" dist/* --clobber
+          else
+            # The CHANGELOG section is prepended to GitHub's generated notes.
+            gh release create "${TAG}" dist/* --verify-tag --title "${TAG}" \
+              --notes-file notes.md --generate-notes "${flags[@]}"
+          fi
