@@ -1,0 +1,33 @@
+# gitleaks configuration: the default ruleset plus a narrow allowlist.
+#
+# llm-firewall is a secret detector, so its tests and benchmark corpora must
+# contain secret-SHAPED strings. Only the specific synthetic fixtures below are
+# allowed, and only in the file they live in (path AND exact value must match).
+# Anything else -- including the same value in another file -- is still reported.
+
+title = "llm-firewall gitleaks config"
+
+[extend]
+useDefault = true
+
+# Unit test `rule_span_suppresses_overlapping_generic`: a fake, patterned
+# GitHub PAT (aA1bB2cC3...) used to check rule-span deduplication.
+[[allowlists]]
+description = "Synthetic GitHub PAT in the secret-detector unit test"
+targetRules = ["github-pat"]
+condition = "AND"
+paths = ['''^crates/core/src/detectors/secret\.rs$''']
+regexes = ['''^ghp_aA1bB2cC3dD4eE5fF6gG7hH8iI9jJ0kK1lL2$''']
+
+# Agent-firewall benchmark corpus, attack cases secret-02/03/04: fake
+# high-entropy credentials posted to intake.evil.example to test egress detection.
+[[allowlists]]
+description = "Synthetic high-entropy credentials in the agent-session benchmark corpus"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^crates/bench/corpora/agent_sessions\.jsonl$''']
+regexes = [
+  '''^Kq7Zp2Rw9Lx4Vt6Nb1Mc8Df3Gh5Jk0Yu2Ie4Ao6Sw$''',
+  '''^Tz3Wq8Rb5Yn2Vx7Lp1Kc9Md4Gf6Hj0Ai8Oe2Uw5Sr$''',
+  '''^Bn6Xr4Qw8Zt2Vp9Lk1Mc7Df5Gj3Hs0Ae2Iu4Oy6Rw$''',
+]
