@@ -669,12 +669,12 @@ The GitHub Release for the tag carries:
 | `llm-firewall-vX.Y.Z.cdx.json`, `agentfw-vX.Y.Z.cdx.json` | CycloneDX 1.5 SBOMs of each binary's Rust dependency tree |
 | `SHA256SUMS` | SHA-256 of every archive and SBOM |
 | `<file>.sigstore.json` | Keyless [Sigstore](https://docs.sigstore.dev/) signature bundle for each archive, SBOM and `SHA256SUMS` (certificate + signature + Rekor transparency-log proof) |
-| `llm-firewall-vX.Y.Z.intoto.jsonl` | [SLSA](https://slsa.dev/) v1 build provenance (Build L3, from `slsa-github-generator`) covering every archive and SBOM |
+| `llm-firewall-vX.Y.Z.intoto.jsonl` | [SLSA](https://slsa.dev/) v1 build provenance covering every archive and SBOM: the Sigstore bundle of the [GitHub artifact attestation](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations) (also stored in the repo's attestations) |
 
 The signatures are *keyless*: there is no project key to trust or leak. Each certificate is issued
 to this repository's release workflow at that exact tag by GitHub's OIDC identity, so verification
 checks *who built it, from which workflow and tag*. Needs [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
-v2.4+ and, for provenance, [slsa-verifier](https://github.com/slsa-framework/slsa-verifier#installation).
+v2.4+ and, for provenance, the [GitHub CLI](https://cli.github.com/) (`gh attestation verify`, gh 2.49+).
 
 ```bash
 TAG=v0.3.0
@@ -700,11 +700,12 @@ cosign verify-blob \
   SHA256SUMS
 sha256sum -c SHA256SUMS --ignore-missing      # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
 
-# 3. Provenance: built by the SLSA generator from this repo at this tag.
-slsa-verifier verify-artifact "${ARCHIVE}" \
-  --provenance-path "llm-firewall-${TAG}.intoto.jsonl" \
-  --source-uri github.com/carbon-evolution/llm-firewall \
-  --source-tag "${TAG}"
+# 3. Provenance: built on a GitHub-hosted runner by this repo's release workflow at this tag.
+#    --bundle checks the shipped .intoto.jsonl offline; drop it to fetch the attestation from GitHub.
+gh attestation verify "${ARCHIVE}" --repo carbon-evolution/llm-firewall \
+  --bundle "llm-firewall-${TAG}.intoto.jsonl" \
+  --signer-workflow carbon-evolution/llm-firewall/.github/workflows/release.yml \
+  --source-ref "refs/tags/${TAG}" --deny-self-hosted-runners
 
 tar xzf "${ARCHIVE}" && cd "llm-firewall-${TAG}-${TARGET}" && ./llm-firewall
 ```

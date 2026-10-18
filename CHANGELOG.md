@@ -27,7 +27,7 @@ API traffic), plus output moderation, and the first signed release.
   `--moderation-threshold` for output-path measurement.
 - **Release artifacts**: prebuilt `llm-firewall` + `agentfw` archives for Linux (x86_64,
   aarch64) and macOS (x86_64, arm64), with `SHA256SUMS`, keyless Sigstore signature bundles,
-  SLSA build provenance and CycloneDX SBOMs. See "Verifying a release" in the README.
+  SLSA build provenance (GitHub artifact attestation) and CycloneDX SBOMs. See "Verifying a release" in the README.
 
 ### Fixed
 - Injection policy rules are now scoped to the input path, so they no longer run on (and
