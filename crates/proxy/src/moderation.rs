@@ -115,6 +115,29 @@ impl ModerationGate {
         GateVerdict::Allow
     }
 
+    /// Strict constructor used at startup: when moderation is enabled but cannot run
+    /// (built without `ml`, or the model fails to load) this is an error — the proxy
+    /// refuses to start — unless `optional: true`, which keeps the old warn-and-continue.
+    pub fn from_config(cfg: OutputModeration) -> anyhow::Result<Self> {
+        let optional = cfg.optional;
+        let enabled = cfg.enabled;
+        let gate = Self::new(cfg);
+        if enabled && !gate.is_live() && !optional {
+            anyhow::bail!(
+                "output_moderation is enabled but the moderation model is not available ({}); \
+                 refusing to start. Build with `--features ml`, fetch it with \
+                 `./scripts/fetch-model.sh moderation`, or set `output_moderation.enabled: false` / \
+                 `output_moderation.optional: true`",
+                if cfg!(feature = "ml") {
+                    "model failed to load; see the warning above"
+                } else {
+                    "binary built without the `ml` feature"
+                }
+            );
+        }
+        Ok(gate)
+    }
+
     /// True when the gate is live (enabled, built with `ml`, model loaded).
     pub fn is_live(&self) -> bool {
         #[cfg(feature = "ml")]
@@ -132,6 +155,15 @@ impl ModerationGate {
     /// the text was delivered would be meaningless.
     pub fn blocks(&self) -> bool {
         self.is_live() && self.cfg.action == ModerationAction::Block
+    }
+
+    /// One-word status for the startup log.
+    pub fn status(&self) -> &'static str {
+        match (self.cfg.enabled, self.is_live()) {
+            (false, _) => "off",
+            (true, true) => "on",
+            (true, false) => "unavailable (optional)",
+        }
     }
 
     pub fn refusal_message(&self) -> &str {
@@ -191,6 +223,29 @@ mod tests {
             }
             _ => panic!("expected harmful"),
         }
+    }
+
+    #[test]
+    fn an_enabled_but_unloadable_gate_refuses_startup() {
+        let cfg = OutputModeration {
+            enabled: true,
+            model_path: "/nonexistent/llm-firewall-moderation-model".into(),
+            ..Default::default()
+        };
+        let err = ModerationGate::from_config(cfg.clone())
+            .err()
+            .expect("must fail closed");
+        assert!(err.to_string().contains("refusing to start"), "{err}");
+        // `optional: true` restores warn-and-continue.
+        let gate = ModerationGate::from_config(OutputModeration {
+            optional: true,
+            ..cfg
+        })
+        .unwrap();
+        assert!(!gate.is_live());
+        assert_eq!(gate.status(), "unavailable (optional)");
+        // Disabled never fails.
+        assert!(ModerationGate::from_config(OutputModeration::default()).is_ok());
     }
 
     #[test]

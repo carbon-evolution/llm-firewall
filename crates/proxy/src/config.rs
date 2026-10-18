@@ -89,6 +89,66 @@ pub struct Config {
     pub agent_inspection: AgentInspection,
     #[serde(default)]
     pub output_moderation: OutputModeration,
+    #[serde(default)]
+    pub injection: InjectionCfg,
+}
+
+/// Prompt-injection detection settings.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct InjectionCfg {
+    /// Stage C: the DeBERTa classifier (needs a build with `--features ml`).
+    pub ml: InjectionMl,
+}
+
+fn default_injection_model() -> String {
+    "models/injection".into()
+}
+fn default_injection_threshold() -> f32 {
+    0.5
+}
+
+/// The ML prompt-injection classifier. **Fail-closed:** when it is enabled and the
+/// model cannot be loaded (or the binary lacks the `ml` feature), the proxy refuses
+/// to start — unless `optional: true`, which downgrades that to a logged warning.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct InjectionMl {
+    /// `None` (key omitted) = on in builds with the `ml` feature, off otherwise.
+    pub enabled: Option<bool>,
+    /// Directory with `config.json`, `tokenizer.json`, `model.safetensors`
+    /// (`scripts/fetch-model.sh injection`).
+    pub model_dir: String,
+    /// P(injection) at/above which the classifier flags (the model's boundary is 0.5).
+    pub threshold: f32,
+    /// Start without the classifier (warning only) if it cannot be loaded.
+    pub optional: bool,
+}
+
+impl Default for InjectionMl {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            model_dir: default_injection_model(),
+            threshold: default_injection_threshold(),
+            optional: false,
+        }
+    }
+}
+
+impl InjectionMl {
+    /// Whether the classifier should be attached, resolving the build-dependent default.
+    pub fn wanted(&self) -> bool {
+        self.enabled.unwrap_or(cfg!(feature = "ml"))
+    }
+
+    /// Explicitly off (used by tests and rule-only deployments).
+    pub fn disabled() -> Self {
+        Self {
+            enabled: Some(false),
+            ..Self::default()
+        }
+    }
 }
 
 /// What to do when a model reply is judged harmful.
@@ -128,6 +188,9 @@ pub struct OutputModeration {
     pub categories: Vec<String>,
     /// Refusal message returned to the client when `action: block`.
     pub refusal_message: String,
+    /// Start without moderation (warning only) if the model cannot be loaded. By default
+    /// an enabled-but-unloadable moderation model refuses startup (fail-closed).
+    pub optional: bool,
 }
 
 impl Default for OutputModeration {
@@ -139,6 +202,7 @@ impl Default for OutputModeration {
             model_path: default_mod_model(),
             categories: Vec::new(),
             refusal_message: default_refusal(),
+            optional: false,
         }
     }
 }
@@ -247,6 +311,32 @@ mod tests {
         assert!(c.output_moderation.enabled);
         assert_eq!(c.output_moderation.action, ModerationAction::Block);
         assert!((c.output_moderation.threshold - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn injection_ml_defaults_follow_the_build() {
+        let c = Config::from_yaml("upstream: {}").unwrap();
+        assert_eq!(c.injection.ml.enabled, None);
+        assert_eq!(c.injection.ml.wanted(), cfg!(feature = "ml"));
+        assert_eq!(c.injection.ml.model_dir, "models/injection");
+        assert!((c.injection.ml.threshold - 0.5).abs() < 1e-6);
+        assert!(!c.injection.ml.optional, "fail-closed by default");
+        assert!(!c.output_moderation.optional, "fail-closed by default");
+    }
+
+    #[test]
+    fn injection_ml_parses_explicit_settings() {
+        let c = Config::from_yaml(
+            "upstream: {}\ninjection:\n  ml:\n    enabled: true\n    model_dir: /opt/m\n    threshold: 0.3\n    optional: true\noutput_moderation:\n  enabled: true\n  optional: true\n",
+        )
+        .unwrap();
+        assert!(c.injection.ml.wanted());
+        assert_eq!(c.injection.ml.model_dir, "/opt/m");
+        assert!((c.injection.ml.threshold - 0.3).abs() < 1e-6);
+        assert!(c.injection.ml.optional);
+        assert!(c.output_moderation.optional);
+        let c = Config::from_yaml("upstream: {}\ninjection: { ml: { enabled: false } }\n").unwrap();
+        assert!(!c.injection.ml.wanted());
     }
 
     #[test]

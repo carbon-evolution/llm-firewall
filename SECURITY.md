@@ -35,11 +35,9 @@ This project is a **defensive** tool — a firewall for LLM traffic. Relevant re
 
 ## Out of scope / by design
 
-- The rule layer (regex + heuristics) is the only prompt-injection stage the **proxy** runs today. The
-  DeBERTa classifier behind `--features ml` is used by the benchmark harness; the proxy does not yet
-  attach it (see LLM01 below). A miss by the rule layer is a known, documented recall limit, not a
-  vulnerability on its own. (`--features ml` in the proxy enables only the opt-in output-moderation
-  model.)
+- A default build of the proxy runs the rule layer (regex + heuristics) only; a build with
+  `--features ml` also runs the DeBERTa classifier (`injection.ml`, see LLM01). A miss by the stage(s)
+  you run is a known, documented recall limit (README benchmark), not a vulnerability on its own.
 - Detection is probabilistic. No classifier is perfect; see `docs/methodology.md` and the README
   benchmark for measured recall and false-positive rates and their honest limits.
 - The content-moderation layer is **not** a full safety system and makes no claim to detect illegal
@@ -76,7 +74,7 @@ application behind it, and **(b) exposure** of the firewall itself.
 
 | # | Category | Residual risk |
 |---|---|---|
-| LLM01 | Prompt Injection | 🔴 **High** |
+| LLM01 | Prompt Injection | 🟠 **Medium** |
 | LLM02 | Sensitive Information Disclosure | 🟠 **Medium** |
 | LLM03 | Supply Chain | 🟢 **Low** |
 | LLM04 | Data and Model Poisoning | 🟠 **Medium** |
@@ -96,20 +94,21 @@ application behind it, and **(b) exposure** of the firewall itself.
 | A03 | Software Supply Chain Failures | 🟢 **Low** |
 | A04 | Cryptographic Failures | 🟠 **Medium** |
 | A05 | Injection | 🟢 **Low** |
-| A06 | Insecure Design | 🔴 **High** |
+| A06 | Insecure Design | 🟠 **Medium** |
 | A07 | Authentication Failures | 🟢 **Low** |
 | A08 | Software or Data Integrity Failures | 🟠 **Medium** |
 | A09 | Security Logging and Alerting Failures | 🟠 **Medium** |
 | A10 | Mishandling of Exceptional Conditions | 🟠 **Medium** |
 
-**Overall (both lists): 2 High, 12 Medium, 4 Low, 2 N/A.** The project's engineering hygiene is strong — memory-safe
+**Overall (both lists): 0 High, 14 Medium, 4 Low, 2 N/A** (was 2 High / 12 Medium; LLM01 and A06
+re-rated after the ML-wiring fix in this PR and the streaming fix in #34). The project's engineering hygiene is strong — memory-safe
 Rust with two `unsafe` blocks, no open RustSec findings that reach the build, SHA-pinned CI, signed
-release images, and an audit log that verifiably records no prompt text or credentials. The High
-ratings are about the **security function itself**: the proxy inspects fewer request/response shapes
-than the README implies, and the injection recall that ships in the proxy is the rule layer's, not the
-DeBERTa figure. ZAP found no High or Medium issues (details under A02).
+release images, and an audit log that verifiably records no prompt text or credentials. The two
+original High ratings were about the **security function itself** — streamed replies were barely
+inspected (fixed in #34) and the proxy never loaded the DeBERTa classifier (fixed in this PR); what
+remains is coverage of a few request/response shapes (Medium). ZAP found no High or Medium issues (details under A02).
 
-### LLM01 — Prompt Injection · 🔴 High
+### LLM01 — Prompt Injection · 🟠 Medium
 
 *(a) Protection*
 - ✅ Three-stage detector exists (`crates/core/src/detectors/injection/`): regex signatures, heuristics,
@@ -121,14 +120,17 @@ DeBERTa figure. ZAP found no High or Medium issues (details under A02).
   on a multilingual benign control (README "Obfuscation resilience").
 - ✅ OpenAI `role: "tool"` messages and the Anthropic `system` prompt are scanned as input (indirect
   injection via tool output is covered on the OpenAI path; verified).
-- ⚠️ **The proxy never attaches the ML classifier.** `build_firewall` constructs
-  `InjectionDetector::new()` without `with_ml` (`crates/proxy/src/lib.rs:25-45`); only the bench harness
-  loads `models/injection` (`crates/bench/src/main.rs:105`). The README prerequisites table says building
-  with `--features ml` "turns on the AI detection stage", but in the proxy that flag only enables output
-  moderation. **Deployed injection recall is therefore the "Default" row of the README benchmark: 1.9%
-  (deepset), 23.7% (jailbreak-classification), 14.6% (safe-guard) at ≤ 0.1% FPR** — not the "+ ML"
-  84.3% / 85.6% / 41.4%. Manual probes confirm: paraphrased, leetspeak, non-English and base64-wrapped
-  instructions are forwarded.
+- ✅ **The proxy attaches the ML classifier — fixed in this PR (`fix/proxy-ml-classifier`).** *Was:*
+  `build_firewall` never called `with_ml`, so even an `ml` build ran the rule layer only (README
+  "Default" row: 1.9% / 23.7% / 14.6% recall) while the README implied the "+ ML" figures. *Now:* an `ml`
+  build loads the classifier from `injection.ml.model_dir` (default `models/injection`, threshold
+  `injection.ml.threshold`, default 0.5) and **refuses to start** if it is enabled but cannot load,
+  unless `injection.ml.optional: true`; the startup log names the active stages. Verified with the real
+  model: of the four probe classes that the rule layer forwarded, paraphrased and Spanish overrides are
+  now blocked (400), benign controls pass. ⚠️ Residual: leetspeak and base64-wrapped instructions are
+  still forwarded (classifier limit; base64 decoding is an opt-in normalizer tier), and **default
+  builds — including release binaries and the Docker image — still run the rule layer only** (README
+  now says so).
 - ⚠️ **Inspection gaps (verified with a mock upstream):** Anthropic content blocks other than top-level
   `type: "text"` — notably `tool_result` (string or nested text) and `document` blocks — are forwarded
   unscanned (`crates/proxy/src/pipeline.rs:113-131`), so indirect injection via tool results is *not*
@@ -145,9 +147,8 @@ DeBERTa figure. ZAP found no High or Medium issues (details under A02).
 - ✅ The firewall has no model of its own on the request path, so it cannot be prompt-injected; the
   `agentfw` judge accepts only the two tokens `INJECTION`/`DOCUMENTATION` and may only tighten a verdict.
 
-**Recommended:** wire `MlClassifier` into `build_firewall` behind config (`injection.ml_model_path`,
-threshold) and fail closed if it is configured but cannot load; until then, correct the README
-prerequisites line. Scan Anthropic `tool_result`/`document` text and `tools[].description`; accept
+**Recommended:** consider an `ml` variant of the release image so the "+ ML" recall is available
+without building from source; pin and checksum the model (LLM04). Scan Anthropic `tool_result`/`document` text and `tools[].description`; accept
 OpenAI content-part arrays and scan their `text` parts; consider a joined-conversation scan.
 
 ### LLM02 — Sensitive Information Disclosure · 🟠 Medium
@@ -219,12 +220,11 @@ ignores when candle moves to zip ≥ 9.
   `crates/core/src/detectors/moderation.rs:66`) memory-map weights with
   `VarBuilder::from_mmaped_safetensors`; if the file is modified or truncated while mapped, behaviour is
   undefined (crash or silently wrong weights). Exposure requires write access to the model directory.
-- ⚠️ The moderation gate silently degrades to a no-op if `output_moderation.enabled` is set but the model
-  fails to load (`crates/proxy/src/moderation.rs:79`, warning only).
+- ✅ A configured model that fails to load now refuses startup (injection classifier and output
+  moderation), unless the block sets `optional: true` (fixed in this PR).
 
 **Recommended:** pin model revisions (commit SHA) and verify SHA-256 in `fetch-model.sh` and again at
-load; keep the model directory read-only to the service user (read-only volume in containers); fail
-startup when a configured model cannot load.
+load; keep the model directory read-only to the service user (read-only volume in containers).
 
 ### LLM05 — Improper Output Handling · 🟠 Medium
 
@@ -385,11 +385,11 @@ non-loopback deployments.
 - ⚠️ Deserialization errors echo the JSON path and serde message back to the client as `text/plain`
   (e.g. `messages[0].content: invalid type …`) — minor reflection, no HTML context.
 
-### A06 — Insecure Design · 🔴 High
+### A06 — Insecure Design · 🟠 Medium
 
 The proxy's security function has design-level gaps where traffic passes without the inspection the
 documentation describes. Each was reproduced against the release build with a mock upstream.
-- ✅ **Streamed output is inspected on the reassembled text — fixed in this PR (`fix/stream-inspection`).**
+- ✅ **Streamed output is inspected on the reassembled text — fixed in #34.**
   *Was:* the SSE scanner matched raw upstream bytes (JSON frames included) in a 256-byte tail window and
   forwarded each chunk right after its scan, so a secret split across delta frames reached the client;
   moderation and agent inspection did not run on streams. *Now* (`crates/proxy/src/stream.rs`): SSE
@@ -408,13 +408,14 @@ documentation describes. Each was reproduced against the release build with a mo
 - ⚠️ **Partial response inspection** — only the first choice's text (LLM02).
 - ⚠️ **Partial request inspection** — Anthropic `tool_result`/`document` blocks and tool definitions are
   not scanned (LLM01).
-- ⚠️ **ML stage not wired into the proxy** (LLM01).
+- ✅ **ML stage wired into the proxy, fail-closed** (LLM01; fixed in this PR). With the streaming fix
+  (#34) both High items are closed; the remaining items are partial inspection of some shapes, so A06
+  is re-rated **Medium**.
 - ✅ Good design elsewhere: fail-closed default, dual-scan normalization (obfuscation alone is never a
   block reason), direction-scoped policies, tighten-only judge, shadow-first rollout of new enforcement.
 
 **Recommended:** treat "every text-bearing field is inspected" as an invariant with tests per API
-shape; add a regression test for each remaining gap above. (A06 stays High here only because of the
-ML-wiring item, fixed separately.)
+shape; add a regression test for each remaining gap above.
 
 ### A07 — Authentication Failures · 🟢 Low
 
@@ -443,7 +444,7 @@ ML-wiring item, fixed separately.)
   tags and latency (`crates/proxy/src/audit.rs`); verified to exclude prompt text, secrets and
   credentials. `agentfw` keeps an append-only `0600` JSONL audit log with `replay` tooling.
 - ✅ Streaming requests now get the same input audit record as non-streaming ones, written before the
-  stream starts, plus an output `stream_done` / `stream_error` / `block` record (fixed in this PR).
+  stream starts, plus an output `stream_done` / `stream_error` / `block` record (fixed in #34).
 - ⚠️ Non-200 upstream responses and requests rejected before the handler (413, 415, 422, 400 parse
   errors) are not audited.
 - ⚠️ Records carry no client identity (address or key fingerprint), the `req-N` counter restarts with the
@@ -461,13 +462,13 @@ blocks by rule.
 - ⚠️ The fail-closed error body exposes the upstream URL (LLM02).
 - ⚠️ `fail_mode: fail_open` does not change behaviour beyond the error text (both modes return 502), so
   the option is misleading.
-- ⚠️ Output moderation configured but unable to load its model silently disables itself (LLM04).
+- ✅ An enabled model (injection ML or output moderation) that cannot load refuses startup instead of
+  silently disabling itself, unless `optional: true` (fixed in this PR).
 - ⚠️ The proxy's agent mutex uses `lock().expect(…)` (`handlers.rs:46`): after any panic while held, every
   later inspected request panics (only when `agent_inspection.enabled`).
 - ⚠️ No timeouts (LLM10).
 
-**Recommended:** generic client-facing errors; implement or remove `fail_open`; fail startup when an
-enabled feature cannot initialize; recover from a poisoned mutex or use `parking_lot`.
+**Recommended:** generic client-facing errors; implement or remove `fail_open`; recover from a poisoned mutex or use `parking_lot`.
 
 ### Automated security controls
 

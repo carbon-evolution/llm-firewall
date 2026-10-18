@@ -361,7 +361,7 @@ You don't need everything below — pick the row that matches what you want to d
 | I want to… | You need |
 |---|---|
 | **Run the firewall (default)** | Rust **1.96+** (`rustup`), *or* Docker. Plus **your own LLM API key** (OpenAI/Claude) — the firewall forwards your key upstream, it does not supply one. |
-| **Turn on the AI detection stage** | The above **+** the DeBERTa model (~703 MB, one-time download via `./scripts/fetch-model.sh`) **+** build with `--features ml` (first build pulls & compiles the `candle` ML crates — a few minutes). |
+| **Turn on the AI detection stage** | The above **+** the DeBERTa model (~703 MB, one-time download via `./scripts/fetch-model.sh injection` → `models/injection/`) **+** build with `--features ml` (first build pulls & compiles the `candle` ML crates — a few minutes). An `ml` build of the proxy loads the classifier from `injection.ml.model_dir` and **refuses to start** if it can't (set `injection.ml.optional: true` to start rules-only instead, or `enabled: false`). The startup log line `detection stages: …` says what is running. The same build also enables the opt-in output-moderation model (`./scripts/fetch-model.sh moderation`). Prebuilt release binaries and the Docker image are default builds (no ML). |
 | **Use the agent library** | Rust 1.96+. No model, no network, no I/O — `crates/agent` is dependency-light and pure. |
 | **Reproduce the benchmark** | **Python 3** (standard library only — *no* `pip install` needed) to fetch the dataset, plus internet access. |
 | **Deploy as a sidecar** | Docker and/or `kubectl` (see `deploy/`). |
@@ -759,7 +759,18 @@ output_moderation:          # off by default; with action: block, streams are he
   threshold: 0.8            # probability at/above which a reply is judged harmful
   model: models/moderation
   refusal: "This response was withheld by the output content policy."
+
+injection:
+  ml:                       # the DeBERTa stage; only in builds with --features ml
+    # enabled: true         # omitted = on in `ml` builds, off otherwise
+    model_dir: models/injection   # ./scripts/fetch-model.sh injection
+    threshold: 0.5          # P(injection) at/above which `block-ml-injection` fires
+    optional: false         # false = refuse to start if the model can't load (fail-closed)
 ```
+
+An enabled model that can't be loaded — the injection classifier, or `output_moderation` with
+`enabled: true` — stops the proxy at startup with an error naming the fix, instead of silently running
+without it. Set `optional: true` on that block to accept running without it (logged as a warning).
 
 ---
 
@@ -820,7 +831,9 @@ cargo run --release -p llm-firewall-bench --features ml -- --dataset datasets/sa
 <!-- BENCHMARK:START -->
 Measured on Apple Silicon CPU, single-threaded, on the corpora above. Higher malicious
 accuracy is better; **lower over-defense FPR is better**. "Default" = regex + heuristics
-only (no ML); "+ ML" = full system with the DeBERTa stage.
+only (no ML); "+ ML" = full system with the DeBERTa stage. The proxy runs the "+ ML" configuration when
+built with `--features ml` and the model is present (`injection.ml`, see Configuration); a default build
+— including the release binaries and Docker image — runs the "Default" rows.
 
 | Corpus | Build | Malicious accuracy | Over-defense FPR | F1 | p50 latency |
 |---|---|---|---|---|---|
