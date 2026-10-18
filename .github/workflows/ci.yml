@@ -41,10 +41,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+      # cargo-deny runs directly on the runner (the Docker-based cargo-deny-action
+      # trips over rust-toolchain.toml); the pinned prebuilt binary is checksum-verified.
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
         with:
-          # deny.toml sets [graph] all-features, so the optional `ml` tree is checked too.
-          command: check
+          tool: cargo-deny@0.20.2
+      # deny.toml sets [graph] all-features, so the optional `ml` tree is checked too.
+      - run: cargo deny check
 
   # Secrets in the full git history; allowlist for synthetic fixtures in .gitleaks.toml.
   gitleaks:
