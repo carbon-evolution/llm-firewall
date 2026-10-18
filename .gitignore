@@ -1,6 +1,5 @@
 /target
 **/*.rs.bk
-Cargo.lock
 
 # ML model weights -- fetched on demand via scripts/fetch-model.sh (large, upstream-licensed)
 /models

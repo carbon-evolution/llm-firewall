@@ -166,7 +166,7 @@ impl Default for Upstream {
 
 impl Config {
     pub fn from_yaml(s: &str) -> anyhow::Result<Self> {
-        let mut cfg: Config = serde_yaml::from_str(s)?;
+        let mut cfg: Config = serde_saphyr::from_str(s)?;
         cfg.apply_env();
         Ok(cfg)
     }

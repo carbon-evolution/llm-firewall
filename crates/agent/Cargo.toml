@@ -11,4 +11,4 @@ llm-firewall-core = { path = "../core", version = "0.2.0" }
 regex.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
-serde_yaml = "0.9"
+serde-saphyr = "1.3"
