@@ -9,7 +9,7 @@ description = "Detection engine for the LLM Firewall: injection/PII/secret detec
 [dependencies]
 regex.workspace = true
 serde = { workspace = true }
-serde-saphyr = "1.3"
+serde-saphyr = "2.0"
 unicode-normalization = "0.1"
 base64 = "0.22"
 
