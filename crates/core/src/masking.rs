@@ -1,5 +1,6 @@
 //! Replace finding spans in text with typed tokens, e.g. "alice@acme.com" -> "‹EMAIL›".
-//! Overlapping spans are resolved by keeping the earliest-starting, longest span.
+//! Overlapping spans merge into one masked region, labelled by the earliest-starting,
+//! longest span: every byte covered by any valid span is replaced.
 
 use crate::Finding;
 
@@ -22,15 +23,19 @@ pub fn mask(text: &str, findings: &[Finding]) -> String {
     let mut out = String::with_capacity(text.len());
     let mut cursor = 0usize;
     for (span, token) in spans {
-        if span.start < cursor {
-            continue; // overlaps an already-masked region
-        }
-        if span.start > text.len()
+        if span.start > span.end
             || span.end > text.len()
             || !text.is_char_boundary(span.start)
             || !text.is_char_boundary(span.end)
         {
             continue; // defensive: stale or non-char-boundary span (never panic on bad input)
+        }
+        if span.start < cursor {
+            // Starts inside an already-masked region. Extend that region rather than
+            // dropping this span: a partial overlap would otherwise leave the tail of
+            // this finding (e.g. the rest of an email after a token) in the clear.
+            cursor = cursor.max(span.end);
+            continue;
         }
         out.push_str(&text[cursor..span.start]);
         out.push_str(&token);
@@ -79,6 +84,54 @@ mod tests {
             Finding::new("secret.generic", Severity::Low, 0.5, "inner").with_span(2..7),
         ];
         assert_eq!(mask(text, &findings), "‹AWS_KEY› tail");
+    }
+
+    #[test]
+    fn partially_overlapping_span_extends_the_masked_region() {
+        // Found by the `detectors` fuzz target: a span starting inside an earlier one
+        // but ending past it used to be dropped, leaving its tail unmasked.
+        let text = "aaaaBBBBcccc tail";
+        let findings = vec![
+            Finding::new("secret.generic", Severity::Low, 0.5, "first").with_span(0..8),
+            Finding::new("pii.email", Severity::Medium, 0.9, "second").with_span(4..12),
+        ];
+        assert_eq!(mask(text, &findings), "‹GENERIC› tail");
+    }
+
+    #[test]
+    fn real_detectors_partial_overlap_leaves_nothing_in_the_clear() {
+        // secret.generic stops at '@'; pii.email starts after the '/' (not an email
+        // char) and runs through the domain. Before the fix the domain leaked.
+        use crate::{Context, Detector, PiiDetector, SecretDetector};
+        let text = "token Zq9/abcdefghijklmnopqrstuvwxyz0123@evil.example.com end";
+        let ctx = Context::input(text);
+        let mut findings = SecretDetector::new().inspect(&ctx);
+        findings.extend(PiiDetector::new().inspect(&ctx));
+        let generic = findings
+            .iter()
+            .find(|f| f.detector == "secret.generic")
+            .and_then(|f| f.span.clone())
+            .expect("generic token found");
+        let email = findings
+            .iter()
+            .find(|f| f.detector == "pii.email")
+            .and_then(|f| f.span.clone())
+            .expect("email found");
+        assert!(
+            generic.start < email.start && email.start < generic.end && generic.end < email.end,
+            "fixture must produce a partial overlap: {generic:?} {email:?}"
+        );
+        let masked = mask(text, &findings);
+        assert_eq!(masked, "token ‹GENERIC› end");
+        assert!(!masked.contains("evil.example.com"));
+    }
+
+    #[test]
+    fn reversed_span_is_skipped() {
+        let text = "abcdef";
+        let findings = vec![Finding::new("pii.x", Severity::Low, 0.5, "x")
+            .with_span(std::ops::Range { start: 4, end: 2 })];
+        assert_eq!(mask(text, &findings), text);
     }
 
     #[test]

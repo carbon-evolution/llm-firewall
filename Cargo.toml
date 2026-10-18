@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
 members = ["crates/core", "crates/proxy", "crates/bench", "crates/agent", "crates/agentfw"]
+# cargo-fuzz harnesses: a separate nightly-only workspace with its own Cargo.lock.
+exclude = ["fuzz"]
 
 [workspace.package]
 edition = "2021"

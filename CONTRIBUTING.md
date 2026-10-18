@@ -17,6 +17,19 @@ cargo fmt --all
 cargo test -p llm-firewall-core --features ml -- --ignored
 ```
 
+## Fuzzing
+
+Parsers of untrusted input (request bodies, SSE streams, detectors and masking, policy YAML, agentfw
+hook payloads and MCP manifests) have cargo-fuzz targets in `fuzz/`. They run on nightly:
+
+```bash
+cargo install cargo-fuzz --locked
+cd fuzz && mkdir -p corpus-work/detectors
+cargo +nightly fuzz run detectors corpus-work/detectors corpus/detectors -- -dict=llm-firewall.dict -max_total_time=120
+```
+
+See [docs/fuzzing.md](docs/fuzzing.md) for the targets and how to reproduce a crash.
+
 ## Ground rules
 
 - **Both build modes must stay green:** default (regex + heuristics) *and* `--features ml`.

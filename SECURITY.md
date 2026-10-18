@@ -222,6 +222,7 @@ default plain-HTTP `0.0.0.0` listener exposes client keys in transit.
   fixtures, ClamAV over the source and fetched crates, Dependabot for cargo/actions/docker,
   digest-pinned Docker bases. Dependabot, secret-scanning and code-scanning: **0 open security alerts**
   (the 6 open code-scanning alerts are Scorecard posture checks, below).
+- ✅ Fuzzing: cargo-fuzz targets for request parsing, SSE streams, detectors/masking, policy YAML, agentfw hooks and MCP manifests run on PRs and weekly (`.github/workflows/fuzz.yml`, `docs/fuzzing.md`).
 - ⚠️ **Scorecard "Vulnerabilities" scores 1/10** because its OSV scan reads `Cargo.lock` as a flat list: it
   counts the four ignored advisories above plus five `quinn-proto` 0.11.16 advisories
   (RUSTSEC-2026-0338…0342). `quinn-proto` appears in the lockfile via reqwest's optional HTTP/3 support
