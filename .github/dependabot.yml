@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Crate version updates, minor/patch grouped into one weekly PR. Security
+  # updates are enabled in repo settings and arrive independently of this.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # Keeps SHA-pinned workflow actions (and their "# vX.Y.Z" comments) current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Base images are pinned by digest in deploy/Dockerfile; this keeps them current.
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule:
+      interval: weekly
+    # Rust and Debian major jumps (rust 2.x, debian trixie) are deliberate
+    # upgrades; only take digest/minor/patch updates automatically.
+    ignore:
+      - dependency-name: rust
+        update-types: ["version-update:semver-major"]
+      - dependency-name: debian
+        update-types: ["version-update:semver-major"]
+    groups:
+      docker:
+        patterns: ["*"]
