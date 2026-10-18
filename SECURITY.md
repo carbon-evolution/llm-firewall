@@ -47,8 +47,9 @@ This project is a **defensive** tool — a firewall for LLM traffic. Relevant re
 
 ## Security assessment
 
-*Assessed 2026-10-18 against commit `9d4039f` (`main`, after #22 and #23). Re-assess after major
-changes; the automated controls at the end run continuously.*
+*Assessed 2026-10-18 against commit `9d4039f` (`main`, after #22 and #23); findings since fixed are
+marked ✅ with the PR that fixed them (#34, #35, and the scanning-coverage fix referred to as "this
+PR"). Re-assess after major changes; the automated controls at the end run continuously.*
 
 **Method:** manual code review of the proxy request path (`crates/proxy`: router, handlers, pipeline,
 config, streaming, moderation, agent scan), the detectors and ML loaders (`crates/core`), and the agent
@@ -78,7 +79,7 @@ application behind it, and **(b) exposure** of the firewall itself.
 | LLM02 | Sensitive Information Disclosure | 🟠 **Medium** |
 | LLM03 | Supply Chain | 🟢 **Low** |
 | LLM04 | Data and Model Poisoning | 🟠 **Medium** |
-| LLM05 | Improper Output Handling | 🟠 **Medium** |
+| LLM05 | Improper Output Handling | 🟢 **Low** |
 | LLM06 | Excessive Agency | 🟠 **Medium** |
 | LLM07 | System Prompt Leakage | 🟠 **Medium** |
 | LLM08 | Vector and Embedding Weaknesses | ⚪ **N/A** |
@@ -94,19 +95,22 @@ application behind it, and **(b) exposure** of the firewall itself.
 | A03 | Software Supply Chain Failures | 🟢 **Low** |
 | A04 | Cryptographic Failures | 🟠 **Medium** |
 | A05 | Injection | 🟢 **Low** |
-| A06 | Insecure Design | 🟠 **Medium** |
+| A06 | Insecure Design | 🟢 **Low** |
 | A07 | Authentication Failures | 🟢 **Low** |
 | A08 | Software or Data Integrity Failures | 🟠 **Medium** |
 | A09 | Security Logging and Alerting Failures | 🟠 **Medium** |
 | A10 | Mishandling of Exceptional Conditions | 🟠 **Medium** |
 
-**Overall (both lists): 0 High, 14 Medium, 4 Low, 2 N/A** (was 2 High / 12 Medium; LLM01 and A06
-re-rated after the ML-wiring fix in this PR and the streaming fix in #34). The project's engineering hygiene is strong — memory-safe
-Rust with two `unsafe` blocks, no open RustSec findings that reach the build, SHA-pinned CI, signed
-release images, and an audit log that verifiably records no prompt text or credentials. The two
-original High ratings were about the **security function itself** — streamed replies were barely
-inspected (fixed in #34) and the proxy never loaded the DeBERTa classifier (fixed in this PR); what
-remains is coverage of a few request/response shapes (Medium). ZAP found no High or Medium issues (details under A02).
+**Overall (both lists): 0 High, 12 Medium, 6 Low, 2 N/A** (originally 2 High / 12 Medium / 4 Low;
+LLM01 and A06 re-rated to Medium after the streaming fix in #34 and the ML-wiring fix in #35; LLM05 and
+A06 re-rated to Low after the scanning-coverage fix in this PR). The project's engineering hygiene is
+strong — memory-safe Rust with two `unsafe` blocks, no open RustSec findings that reach the build,
+SHA-pinned CI, signed release images, and an audit log that verifiably records no prompt text or
+credentials. The two original High ratings were about the **security function itself** — streamed
+replies were barely inspected (fixed in #34) and the proxy never loaded the DeBERTa classifier (fixed
+in #35); the request/response shapes that were still forwarded uninspected are covered by this PR.
+What remains Medium is mostly deployment posture (bind/auth defaults, TLS, timeouts and limits), model
+supply chain, and reply-side masking. ZAP found no High or Medium issues (details under A02).
 
 ### LLM01 — Prompt Injection · 🟠 Medium
 
@@ -118,9 +122,8 @@ remains is coverage of a few request/response shapes (Medium). ZAP found no High
   Verified: Cyrillic-homoglyph, zero-width-split and full-width variants of a known phrase are blocked.
   Benchmark (rule layer, safe-guard): obfuscated recall 0.0% → 14.5%, base64 0.0% → 30.6%, at 0.00% FPR
   on a multilingual benign control (README "Obfuscation resilience").
-- ✅ OpenAI `role: "tool"` messages and the Anthropic `system` prompt are scanned as input (indirect
-  injection via tool output is covered on the OpenAI path; verified).
-- ✅ **The proxy attaches the ML classifier — fixed in this PR (`fix/proxy-ml-classifier`).** *Was:*
+- ✅ OpenAI `role: "tool"` messages and the Anthropic `system` prompt are scanned as input.
+- ✅ **The proxy attaches the ML classifier — fixed in #35.** *Was:*
   `build_firewall` never called `with_ml`, so even an `ml` build ran the rule layer only (README
   "Default" row: 1.9% / 23.7% / 14.6% recall) while the README implied the "+ ML" figures. *Now:* an `ml`
   build loads the classifier from `injection.ml.model_dir` (default `models/injection`, threshold
@@ -131,14 +134,25 @@ remains is coverage of a few request/response shapes (Medium). ZAP found no High
   still forwarded (classifier limit; base64 decoding is an opt-in normalizer tier), and **default
   builds — including release binaries and the Docker image — still run the rule layer only** (README
   now says so).
-- ⚠️ **Inspection gaps (verified with a mock upstream):** Anthropic content blocks other than top-level
-  `type: "text"` — notably `tool_result` (string or nested text) and `document` blocks — are forwarded
-  unscanned (`crates/proxy/src/pipeline.rs:113-131`), so indirect injection via tool results is *not*
-  covered on `/v1/messages`, contrary to the comment in `policies/default.yaml`. Tool/function
-  *definitions* (`tools[].description`) are not scanned on either path. Each message is scored
-  independently, so a phrase split across consecutive messages is not matched.
-- ⚠️ OpenAI content-part arrays (`content: [{"type":"text",...}]`, used for multimodal input) are rejected
-  with 422 (`crates/proxy/src/openai.rs:11`) — fail-closed, but it breaks such clients.
+- ✅ **Indirect content and tool definitions are scanned — fixed in this PR.** *Was:* Anthropic
+  `tool_result` (string or nested blocks) and `document` blocks were forwarded unscanned, so indirect
+  injection via tool results was not covered on `/v1/messages` (contrary to the comment in
+  `policies/default.yaml`); tool/function definitions were not scanned on either path; OpenAI
+  content-part arrays were rejected with 422. *Now* (`crates/proxy/src/pipeline.rs`): Anthropic
+  `tool_result` and `search_result` content (recursively), `document` blocks with `text`, `content` or
+  base64 `text/*` sources (decoded, scanned, re-encoded if masked) plus their `title`/`context`, and on
+  both endpoints every `description` in `tools[]` / `functions[]` (the tool's and those nested in its
+  parameter schema) are scanned as `input` with the same detectors and policy as the prompt — the
+  direction the pipeline already uses for retrieved and tool content. OpenAI content-part arrays are
+  accepted: `text` parts are scanned and masked in place, image/audio parts forwarded unchanged; `tool`
+  messages may use either form. Regression tests (`crates/proxy/tests/scan_coverage.rs`) cover each
+  shape, with benign controls (realistic tool descriptions with imperative phrasing, tool results,
+  documents) that must pass. ⚠️ Residual: documents and files the proxy cannot read as text (PDF, URL
+  or file-id sources, OpenAI `file` parts) and images are forwarded uninspected by default —
+  `input.reject_unscannable_documents: true` refuses them instead. In `ml` builds the classifier now
+  also sees tool descriptions; its false-positive rate on that text has not been measured.
+- ⚠️ Each message is scored independently, so a phrase split across consecutive messages is not
+  matched.
 - ⚠️ Known, documented ML limits that will apply once the classifier is wired in: deepset recall 41.4%
   (broad labels), JailbreakBench 0% (harmful goals, out of scope), base64 over-blocking on output
   (`docs/garak-validation.md`).
@@ -148,8 +162,11 @@ remains is coverage of a few request/response shapes (Medium). ZAP found no High
   `agentfw` judge accepts only the two tokens `INJECTION`/`DOCUMENTATION` and may only tighten a verdict.
 
 **Recommended:** consider an `ml` variant of the release image so the "+ ML" recall is available
-without building from source; pin and checksum the model (LLM04). Scan Anthropic `tool_result`/`document` text and `tools[].description`; accept
-OpenAI content-part arrays and scan their `text` parts; consider a joined-conversation scan.
+without building from source; pin and checksum the model (LLM04); consider a joined-conversation
+scan; measure the classifier's false-positive rate on tool descriptions.
+
+LLM01 stays **Medium**: the request shapes are now covered, but default builds (release binaries,
+Docker image) run the rule layer only, whose recall on paraphrased and multilingual injection is low.
 
 ### LLM02 — Sensitive Information Disclosure · 🟠 Medium
 
@@ -160,13 +177,18 @@ OpenAI content-part arrays and scan their `text` parts; consider a joined-conver
   (`‹EMAIL›`, `‹CREDIT_CARD›`); a US-format phone number was not masked.
 - ✅ Output: `block-secret-output` blocks a secret in a non-streamed reply (verified on both endpoints,
   HTTP 502).
-- ⚠️ **Output inspection gaps (verified):** only `choices[0].message.content` (OpenAI) and text blocks
-  (Anthropic) are scanned (`crates/proxy/src/handlers.rs:167-170`, `266-280`). Secrets in additional
-  choices (when the client requests `n > 1`), in `tool_calls` arguments / `tool_use` input, or in
-  **non-200 upstream bodies** (forwarded unscanned, `handlers.rs:163-165`) reach the client. (Streamed
-  replies are now reassembled and scanned per choice, tool-call arguments included — see A06.)
-- ⚠️ PII masking applies to input only: `decide_output` acts on `block` alone
-  (`crates/proxy/src/pipeline.rs:177-188`), so `mask-pii` never redacts PII in a reply.
+- ✅ **Every output surface of a non-streamed reply is scanned — fixed in this PR.** *Was:* only
+  `choices[0].message.content` (OpenAI) and text blocks (Anthropic) were scanned; secrets in further
+  choices (`n > 1`), `tool_calls` arguments / `tool_use` input, or non-200 upstream bodies reached the
+  client. *Now* non-streamed replies go through the same extraction as streams
+  (`crates/proxy/src/stream.rs`, `scan_reply`): every choice's text and `refusal`, each
+  `tool_calls[].function.arguments` and the legacy `function_call`, and every Anthropic content block
+  (`text`, `tool_use` input serialised, `thinking`), each scanned as its own channel. Non-200 upstream
+  bodies (streamed and non-streamed requests) are scanned on the output policy and replaced by the
+  firewall's 502 error when they match; clean error bodies keep their status and content.
+- ⚠️ PII masking applies to input only: `decide_output` acts on `block` alone, so `mask-pii` never
+  redacts PII in a reply (reply-side masking depends on `crates/core/src/masking.rs`, being changed in
+  a separate PR).
 - ⚠️ No provider-specific patterns for OpenAI (`sk-…`) or Anthropic (`sk-ant-…`) keys; they rely on the
   generic entropy gate.
 
@@ -177,11 +199,14 @@ OpenAI content-part arrays and scan their `text` parts; consider a joined-conver
   configured upstream (`handlers.rs:88-112`); the proxy never stores or injects keys of its own.
 - ⚠️ The listener is plain HTTP and binds `0.0.0.0` by default, so API keys cross the network in clear
   unless the proxy is a loopback sidecar or behind TLS (see A04).
-- ⚠️ With `fail_mode: fail_closed` (the default) the 502 body includes the transport error, which names
-  the internal upstream URL (`handlers.rs:331-334`).
+- ✅ **Upstream failures return a generic error — fixed in this PR.** *Was:* with `fail_mode:
+  fail_closed` the 502 body included the transport error, naming the internal upstream URL. *Now* the
+  client gets `upstream error (fail_closed)` / `bad upstream body`; the detail is logged only.
 
-**Recommended:** scan every choice, tool-call arguments and error bodies; add output-side masking;
-add `sk-`/`sk-ant-` patterns; return a generic upstream-error message and log the detail instead.
+**Recommended:** add output-side masking; add `sk-`/`sk-ant-` patterns.
+
+LLM02 stays **Medium**: output coverage is closed, but replies are never masked (only blocked) and the
+default plain-HTTP `0.0.0.0` listener exposes client keys in transit.
 
 ### LLM03 — Supply Chain · 🟢 Low
 
@@ -222,12 +247,12 @@ ignores when candle moves to zip ≥ 9.
   `VarBuilder::from_mmaped_safetensors`; if the file is modified or truncated while mapped, behaviour is
   undefined (crash or silently wrong weights). Exposure requires write access to the model directory.
 - ✅ A configured model that fails to load now refuses startup (injection classifier and output
-  moderation), unless the block sets `optional: true` (fixed in this PR).
+  moderation), unless the block sets `optional: true` (fixed in #35).
 
 **Recommended:** pin model revisions (commit SHA) and verify SHA-256 in `fetch-model.sh` and again at
 load; keep the model directory read-only to the service user (read-only volume in containers).
 
-### LLM05 — Improper Output Handling · 🟠 Medium
+### LLM05 — Improper Output Handling · 🟢 Low
 
 *(a) Protection*
 - ✅ `OutputDetector` (`crates/core/src/detectors/output.rs`) blocks destructive shell (`rm -rf`,
@@ -235,19 +260,25 @@ load; keep the model directory read-only to the service user (read-only volume i
   `block-dangerous-output`; the phase 14 control check shows each artifact blocks at High/Critical.
 - ✅ Injection rules are scoped to `direction: input` after phase 13 found they over-blocked 16% of
   legitimate security answers on replies (README "What this phase fixed").
-- ⚠️ Same coverage gaps as LLM02: additional choices, tool-call arguments and non-200 bodies of
-  non-streamed replies are not fully inspected. (Streamed replies: fixed, see A06.)
+- ✅ All output surfaces are inspected, streamed (#34) and non-streamed (this PR): every choice,
+  tool-call arguments, Anthropic `tool_use` input and `thinking`, and non-200 error bodies (see LLM02).
+  Behaviour note: a tool call whose arguments contain a dangerous artifact (e.g. a destructive shell
+  command) is now refused in non-streamed replies too, as it already was in streams.
 - ⚠️ Documented limit (phase 14 plan): harmful operational *prose* with no executable artifact is covered
   only by the opt-in moderation model, which caught 84.0% at threshold 0.8 with 0.0% over-block; the
   worst case scored 0.467 and evades at both 0.8 and 0.5.
-- ⚠️ Moderation `block` returns **HTTP 200** with an error envelope (`handlers.rs:196`, `303`); clients
-  that only check the status code treat it as success.
+- ✅ **Moderation `block` returns HTTP 502 — fixed in this PR.** *Was:* HTTP 200 with an error
+  envelope, so clients that only check the status code treated it as success. *Now* it uses the same
+  status and protocol-native error envelope as every other output block. (Streams end with the
+  protocol's error event, unchanged.)
 
 *(b) Exposure*
 - ✅ The proxy never renders or executes model output; it forwards JSON/SSE verbatim.
 
-**Recommended:** inspect all output surfaces (see LLM02); return a non-2xx status (or a well-formed
-completion carrying the refusal text) for moderation blocks.
+**Recommended:** apply output `mask` actions to replies (LLM02).
+
+Re-rated **Low** (was Medium): every output surface is now inspected on both paths and blocks are
+unambiguous; what remains is the documented recall limit on artifact-free harmful prose.
 
 ### LLM06 — Excessive Agency · 🟠 Medium
 
@@ -386,10 +417,10 @@ non-loopback deployments.
 - ⚠️ Deserialization errors echo the JSON path and serde message back to the client as `text/plain`
   (e.g. `messages[0].content: invalid type …`) — minor reflection, no HTML context.
 
-### A06 — Insecure Design · 🟠 Medium
+### A06 — Insecure Design · 🟢 Low
 
-The proxy's security function has design-level gaps where traffic passes without the inspection the
-documentation describes. Each was reproduced against the release build with a mock upstream.
+The assessment found design-level gaps where traffic passed without the inspection the documentation
+described, each reproduced against the release build with a mock upstream. All are now closed.
 - ✅ **Streamed output is inspected on the reassembled text — fixed in #34.**
   *Was:* the SSE scanner matched raw upstream bytes (JSON frames included) in a 256-byte tail window and
   forwarded each chunk right after its scan, so a secret split across delta frames reached the client;
@@ -406,17 +437,23 @@ documentation describes. Each was reproduced against the release build with a mo
   Residual: a match longer than the hold-back (e.g. a risk score that only crosses the threshold over
   the whole reply) is caught at the channel's final scan, after its start may have been released;
   output `mask` actions are not applied to replies (same as non-streamed, LLM02).
-- ⚠️ **Partial response inspection** — only the first choice's text (LLM02).
-- ⚠️ **Partial request inspection** — Anthropic `tool_result`/`document` blocks and tool definitions are
-  not scanned (LLM01).
-- ✅ **ML stage wired into the proxy, fail-closed** (LLM01; fixed in this PR). With the streaming fix
-  (#34) both High items are closed; the remaining items are partial inspection of some shapes, so A06
-  is re-rated **Medium**.
+- ✅ **ML stage wired into the proxy, fail-closed** (LLM01; fixed in #35). With the streaming fix
+  (#34) both High items were closed and A06 was re-rated Medium.
+- ✅ **Full response inspection — fixed in this PR.** Non-streamed replies share the stream path's
+  extraction, so both paths inspect the same surfaces: every choice, tool-call arguments, Anthropic
+  `tool_use` / `thinking` blocks; non-200 bodies are scanned too (LLM02).
+- ✅ **Full request inspection — fixed in this PR.** Anthropic `tool_result` / `search_result` /
+  text `document` content, tool definitions on both endpoints, and OpenAI content-part arrays (now
+  accepted instead of 422) are scanned as input (LLM01). "Every text-bearing field is inspected" is
+  pinned by per-shape regression tests with benign controls (`crates/proxy/tests/scan_coverage.rs`).
+  Residual (documented, opt-in refusal): content that is not text — PDF/URL/file document sources,
+  OpenAI `file` parts, images — is forwarded uninspected unless `input.reject_unscannable_documents`.
+  A06 is re-rated **Low**.
 - ✅ Good design elsewhere: fail-closed default, dual-scan normalization (obfuscation alone is never a
   block reason), direction-scoped policies, tighten-only judge, shadow-first rollout of new enforcement.
 
-**Recommended:** treat "every text-bearing field is inspected" as an invariant with tests per API
-shape; add a regression test for each remaining gap above.
+**Recommended:** extend the per-shape tests whenever the providers add a text-bearing field; consider
+turning `reject_unscannable_documents` on in hardened profiles.
 
 ### A07 — Authentication Failures · 🟢 Low
 
@@ -446,12 +483,16 @@ shape; add a regression test for each remaining gap above.
   credentials. `agentfw` keeps an append-only `0600` JSONL audit log with `replay` tooling.
 - ✅ Streaming requests now get the same input audit record as non-streaming ones, written before the
   stream starts, plus an output `stream_done` / `stream_error` / `block` record (fixed in #34).
-- ⚠️ Non-200 upstream responses and requests rejected before the handler (413, 415, 422, 400 parse
-  errors) are not audited.
+- ✅ **Rejections and upstream errors are audited — fixed in this PR.** Request bodies the proxy
+  cannot accept (400 malformed JSON, 413, 415, 422) get an input `reject` record (status only — never
+  the serde message, which can quote request content); every forwarded request gets its input `allow`
+  record before forwarding; non-200 upstream replies and transport failures get an output
+  `upstream_error` record with the status, or `block` when the error body was refused. (Unknown routes
+  and wrong methods — 404/405 — are still not audited.)
 - ⚠️ Records carry no client identity (address or key fingerprint), the `req-N` counter restarts with the
   process and is not returned to the client, and there is no metrics/alerting hook.
 
-**Recommended:** audit every request outcome, including rejections; add a client
+**Recommended:** add a client
 identifier (hashed key or address), a UUID request id echoed in a response header, and counters for
 blocks by rule.
 
@@ -460,16 +501,17 @@ blocks by rule.
 - ✅ Upstream failure → **502 fail-closed** (non-streaming and streaming); malformed JSON → 400; schema
   errors → 422; no panics observed under ZAP or probes; `unwrap`/`expect` on the request path are
   limited to a static response builder and the agent mutex.
-- ⚠️ The fail-closed error body exposes the upstream URL (LLM02).
+- ✅ Upstream-failure bodies are generic and use the endpoint's own error envelope; the detail, which
+  names the upstream URL, is logged only (LLM02; fixed in this PR).
 - ⚠️ `fail_mode: fail_open` does not change behaviour beyond the error text (both modes return 502), so
   the option is misleading.
 - ✅ An enabled model (injection ML or output moderation) that cannot load refuses startup instead of
-  silently disabling itself, unless `optional: true` (fixed in this PR).
+  silently disabling itself, unless `optional: true` (fixed in #35).
 - ⚠️ The proxy's agent mutex uses `lock().expect(…)` (`handlers.rs:46`): after any panic while held, every
   later inspected request panics (only when `agent_inspection.enabled`).
 - ⚠️ No timeouts (LLM10).
 
-**Recommended:** generic client-facing errors; implement or remove `fail_open`; recover from a poisoned mutex or use `parking_lot`.
+**Recommended:** implement or remove `fail_open`; recover from a poisoned mutex or use `parking_lot`.
 
 ### Automated security controls
 

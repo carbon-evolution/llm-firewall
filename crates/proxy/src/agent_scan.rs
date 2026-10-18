@@ -23,13 +23,16 @@ pub struct ScanVerdict {
     pub reason: Option<String>,
 }
 
-/// Tool outputs in an OpenAI request: `role:"tool"` messages' string content.
+/// Tool outputs in an OpenAI request: `role:"tool"` messages' content (a string, or
+/// the `text` parts of a content-part array).
 pub fn openai_tool_results(req: &ChatRequest) -> Vec<String> {
     req.messages
         .iter()
         .filter(|m| m.role == "tool")
-        .filter_map(|m| m.content.clone())
+        .filter_map(|m| m.content.as_ref())
+        .flat_map(crate::openai::content_text)
         .filter(|c| !c.is_empty())
+        .map(str::to_string)
         .collect()
 }
 
