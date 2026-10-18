@@ -39,7 +39,7 @@ pub fn manifest_hash(tools: &[ToolDecl]) -> String {
         h.update(canonical(&t.schema).to_string().as_bytes());
         h.update([0u8]);
     }
-    format!("{:x}", h.finalize())
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A human-readable summary of what changed between two manifests, for the audit log

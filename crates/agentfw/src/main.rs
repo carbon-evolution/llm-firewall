@@ -85,7 +85,8 @@ fn main() -> anyhow::Result<()> {
                 use sha2::{Digest, Sha256};
                 let mut h = Sha256::new();
                 h.update(command.join(" ").as_bytes());
-                format!("srv-{:x}", h.finalize()).chars().take(12).collect()
+                let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+                format!("srv-{hex}").chars().take(12).collect()
             });
             let proxy_cfg = agentfw::mcp::proxy::ProxyCfg {
                 server_id,
