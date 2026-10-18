@@ -9,13 +9,18 @@
 #![no_main]
 
 use agentfw::mcp::jsonrpc::manifest_from_line;
-use agentfw::mcp::manifest::{diff, manifest_hash};
+use agentfw::mcp::manifest::{diff, legacy_manifest_hash, manifest_hash, pin_matches, PIN_V2};
 use libfuzzer_sys::fuzz_target;
 use llm_firewall_agent::{AgentFirewall, ToolDecl};
 
 fn check(tools: &[ToolDecl]) {
     let h = manifest_hash(tools);
-    assert_eq!(h.len(), 64);
+    let hex = h.strip_prefix(PIN_V2).expect("v2 pin prefix");
+    assert_eq!(hex.len(), 64);
+    assert!(hex.bytes().all(|b| b.is_ascii_hexdigit()));
+    // A pin always matches the manifest it was made from, in either format.
+    assert!(pin_matches(&h, tools, &h));
+    assert!(pin_matches(&legacy_manifest_hash(tools), tools, &h));
     let mut rev = tools.to_vec();
     rev.reverse();
     assert_eq!(
