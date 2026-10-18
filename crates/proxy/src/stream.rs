@@ -202,12 +202,15 @@ fn extract(protocol: Protocol, ev: &SseEvent) -> Vec<Delta> {
         return Vec::new();
     };
     match protocol {
-        Protocol::OpenAi => extract_openai(&v),
+        Protocol::OpenAi => extract_openai_choices(&v, "delta"),
         Protocol::Anthropic => extract_anthropic(&v),
     }
 }
 
-fn extract_openai(v: &Value) -> Vec<Delta> {
+/// An OpenAI stream chunk (`part = "delta"`) or a non-streamed completion
+/// (`part = "message"`): both carry the same fields, incrementally or whole.
+fn extract_openai_choices(v: &Value, part: &str) -> Vec<Delta> {
+    let at = |field: &str| format!("/{part}/{field}");
     let mut out = Vec::new();
     let Some(choices) = v.get("choices").and_then(Value::as_array) else {
         return out;
@@ -221,8 +224,8 @@ fn extract_openai(v: &Value) -> Vec<Delta> {
             choice: i,
             tool: None,
         };
-        // Chat delta text, and legacy completions-style `text`.
-        for s in [str_at(ch, "/delta/content"), str_at(ch, "/text")]
+        // Chat text, and legacy completions-style `text`.
+        for s in [str_at(ch, &at("content")), str_at(ch, "/text")]
             .into_iter()
             .flatten()
         {
@@ -233,7 +236,7 @@ fn extract_openai(v: &Value) -> Vec<Delta> {
                 text: s.to_string(),
             });
         }
-        if let Some(s) = str_at(ch, "/delta/refusal") {
+        if let Some(s) = str_at(ch, &at("refusal")) {
             out.push(Delta::Append {
                 key: text_key,
                 kind: Kind::Text,
@@ -241,7 +244,7 @@ fn extract_openai(v: &Value) -> Vec<Delta> {
                 text: s.to_string(),
             });
         }
-        if let Some(calls) = ch.pointer("/delta/tool_calls").and_then(Value::as_array) {
+        if let Some(calls) = ch.pointer(&at("tool_calls")).and_then(Value::as_array) {
             for (tpos, tc) in calls.iter().enumerate() {
                 let j = tc
                     .get("index")
@@ -260,8 +263,8 @@ fn extract_openai(v: &Value) -> Vec<Delta> {
                 });
             }
         }
-        // Legacy single `function_call` delta.
-        if let Some(fc) = ch.pointer("/delta/function_call") {
+        // Legacy single `function_call`.
+        if let Some(fc) = ch.pointer(&at("function_call")) {
             out.push(Delta::Append {
                 key: Key::Choice {
                     choice: i,
@@ -279,41 +282,45 @@ fn extract_openai(v: &Value) -> Vec<Delta> {
     out
 }
 
+/// An Anthropic content block at position `idx`: as it opens a stream
+/// (`content_block_start`) or, whole, in a non-streamed reply's `content[]`.
+fn anthropic_block(idx: u64, block: &Value) -> Vec<Delta> {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => vec![Delta::Append {
+            key: Key::Block(idx),
+            kind: Kind::Text,
+            name: None,
+            text: str_at(block, "/text").unwrap_or_default().to_string(),
+        }],
+        Some("tool_use") | Some("server_tool_use") => {
+            // Streams usually open with `input: {}` and send the arguments as deltas;
+            // a non-streamed block carries the whole input, scanned serialised.
+            let input = match block.get("input") {
+                Some(Value::Object(m)) if m.is_empty() => String::new(),
+                Some(Value::Null) | None => String::new(),
+                Some(other) => other.to_string(),
+            };
+            vec![Delta::Append {
+                key: Key::Block(idx),
+                kind: Kind::Tool,
+                name: str_at(block, "/name").map(str::to_string),
+                text: input,
+            }]
+        }
+        Some("thinking") => vec![Delta::Append {
+            key: Key::Block(idx),
+            kind: Kind::Other,
+            name: None,
+            text: str_at(block, "/thinking").unwrap_or_default().to_string(),
+        }],
+        _ => Vec::new(),
+    }
+}
+
 fn extract_anthropic(v: &Value) -> Vec<Delta> {
     let idx = v.get("index").and_then(Value::as_u64).unwrap_or(0);
     match v.get("type").and_then(Value::as_str) {
-        Some("content_block_start") => {
-            let block = &v["content_block"];
-            match block.get("type").and_then(Value::as_str) {
-                Some("text") => vec![Delta::Append {
-                    key: Key::Block(idx),
-                    kind: Kind::Text,
-                    name: None,
-                    text: str_at(block, "/text").unwrap_or_default().to_string(),
-                }],
-                Some("tool_use") | Some("server_tool_use") => {
-                    // Usually `input: {}` with the arguments following as deltas.
-                    let input = match block.get("input") {
-                        Some(Value::Object(m)) if m.is_empty() => String::new(),
-                        Some(Value::Null) | None => String::new(),
-                        Some(other) => other.to_string(),
-                    };
-                    vec![Delta::Append {
-                        key: Key::Block(idx),
-                        kind: Kind::Tool,
-                        name: str_at(block, "/name").map(str::to_string),
-                        text: input,
-                    }]
-                }
-                Some("thinking") => vec![Delta::Append {
-                    key: Key::Block(idx),
-                    kind: Kind::Other,
-                    name: None,
-                    text: str_at(block, "/thinking").unwrap_or_default().to_string(),
-                }],
-                _ => Vec::new(),
-            }
-        }
+        Some("content_block_start") => anthropic_block(idx, &v["content_block"]),
         Some("content_block_delta") => {
             let d = &v["delta"];
             let (kind, text) = match d.get("type").and_then(Value::as_str) {
@@ -333,6 +340,56 @@ fn extract_anthropic(v: &Value) -> Vec<Delta> {
         Some("message_stop") => vec![Delta::Done],
         _ => Vec::new(),
     }
+}
+
+// ------------------------------------------------------- non-streamed replies
+
+/// Scan a non-streamed reply with the same channel model as a stream, so both paths
+/// agree on what is inspected: every OpenAI choice's text and refusal, each tool call's
+/// arguments and the legacy `function_call`; every Anthropic content block (`text`,
+/// `tool_use` input serialised, `thinking`). Each channel is scanned on its own, as in
+/// a stream. Returns the reply text (text channels joined by `\n`) for moderation, or
+/// the block reason.
+pub fn scan_reply(protocol: Protocol, fw: &Firewall, body: &Value) -> Result<String, BlockReason> {
+    let deltas = match protocol {
+        Protocol::OpenAi => extract_openai_choices(body, "message"),
+        Protocol::Anthropic => body
+            .get("content")
+            .and_then(Value::as_array)
+            .map(|blocks| {
+                blocks
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(i, b)| anthropic_block(i as u64, b))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    };
+    let mut channels: Vec<(Key, Kind, String)> = Vec::new();
+    for d in deltas {
+        if let Delta::Append {
+            key, kind, text, ..
+        } = d
+        {
+            match channels.iter_mut().find(|(k, _, _)| *k == key) {
+                Some((_, _, t)) => t.push_str(&text),
+                None => channels.push((key, kind, text)),
+            }
+        }
+    }
+    for (_, _, text) in &channels {
+        if !text.is_empty() {
+            if let Some(reason) = decide_output(fw, text) {
+                return Err(reason);
+            }
+        }
+    }
+    Ok(channels
+        .iter()
+        .filter(|(_, kind, text)| *kind == Kind::Text && !text.is_empty())
+        .map(|(_, _, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 // --------------------------------------------------------------- the inspector

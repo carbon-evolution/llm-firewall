@@ -91,6 +91,18 @@ pub struct Config {
     pub output_moderation: OutputModeration,
     #[serde(default)]
     pub injection: InjectionCfg,
+    #[serde(default)]
+    pub input: InputCfg,
+}
+
+/// Request-inspection settings.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(default)]
+pub struct InputCfg {
+    /// Refuse requests carrying document/file content the firewall cannot read as
+    /// text (e.g. a base64 PDF, a URL or file-id source). Off by default: such
+    /// content is forwarded uninspected, as it was before this option existed.
+    pub reject_unscannable_documents: bool,
 }
 
 /// Prompt-injection detection settings.
@@ -281,6 +293,15 @@ mod tests {
         assert_eq!(c.stream_window, 64);
         assert_eq!(c.stream_holdback_bytes, 256);
         assert_eq!(c.effective_holdback(), 256);
+    }
+
+    #[test]
+    fn input_reject_unscannable_documents_is_off_by_default_and_parses() {
+        let c = Config::from_yaml("upstream: {}").unwrap();
+        assert!(!c.input.reject_unscannable_documents);
+        let c = Config::from_yaml("upstream: {}\ninput:\n  reject_unscannable_documents: true\n")
+            .unwrap();
+        assert!(c.input.reject_unscannable_documents);
     }
 
     #[test]

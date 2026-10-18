@@ -12,3 +12,7 @@ injection:
     model_dir: "models/injection"   # ./scripts/fetch-model.sh injection
     threshold: 0.5
     optional: false
+# Request inspection. Documents/files that cannot be read as text (PDF, URL or file-id sources)
+# are forwarded uninspected by default; true refuses them (HTTP 400).
+input:
+  reject_unscannable_documents: false

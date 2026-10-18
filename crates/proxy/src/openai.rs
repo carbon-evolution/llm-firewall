@@ -5,10 +5,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChatMessage {
     pub role: String,
-    /// `None` for assistant tool-call messages, which carry `tool_calls` instead of
-    /// text. A `role:"tool"` result message carries its output here as a string.
+    /// A string, an array of content parts (`[{"type":"text","text":…},
+    /// {"type":"image_url",…}]`), or `None` for assistant tool-call messages, which
+    /// carry `tool_calls` instead. Kept as raw JSON so non-text parts forward
+    /// unchanged; only text is inspected (see [`content_text`]).
     #[serde(default)]
-    pub content: Option<String>,
+    pub content: Option<serde_json::Value>,
     /// Preserve `tool_calls` / `tool_call_id` / `name` so re-forwarding is faithful
     /// and the agent collector can read the tool blocks.
     #[serde(flatten)]
@@ -24,6 +26,20 @@ pub struct ChatRequest {
     /// Preserve unknown fields (temperature, tools, …) so we forward faithfully.
     #[serde(flatten)]
     pub rest: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The text a message `content` carries: the string itself, or every `text` part of a
+/// content-part array, in order. Non-text parts (images, audio, files) carry none.
+pub fn content_text(content: &serde_json::Value) -> Vec<&str> {
+    match content {
+        serde_json::Value::String(s) => vec![s.as_str()],
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -66,6 +82,25 @@ mod tests {
             "tool_calls preserved in rest"
         );
         assert_eq!(req.messages[2].role, "tool");
-        assert_eq!(req.messages[2].content.as_deref(), Some("repo-a\nrepo-b"));
+        assert_eq!(
+            req.messages[2].content,
+            Some(serde_json::json!("repo-a\nrepo-b"))
+        );
+    }
+
+    #[test]
+    fn content_part_arrays_parse_and_round_trip() {
+        let raw = r#"{"model":"gpt-4o","messages":[{"role":"user","content":[
+            {"type":"text","text":"what is this?"},
+            {"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}"#;
+        let req: ChatRequest = serde_json::from_str(raw).unwrap();
+        let content = req.messages[0].content.as_ref().unwrap();
+        assert_eq!(content_text(content), vec!["what is this?"]);
+        let back = serde_json::to_value(&req).unwrap();
+        let orig: serde_json::Value = serde_json::from_str(raw).unwrap();
+        assert_eq!(
+            back["messages"], orig["messages"],
+            "parts forward unchanged"
+        );
     }
 }

@@ -155,5 +155,6 @@ pub fn test_config(base: String) -> Config {
         injection: config::InjectionCfg {
             ml: config::InjectionMl::disabled(),
         },
+        input: config::InputCfg::default(),
     }
 }

@@ -68,10 +68,19 @@ A pure-Rust **firewall for LLMs and the agents built on them**. Two layers, one 
   by direction (input vs. output).
 - **Standards mapping** — every finding is auto-tagged with its **OWASP LLM Top 10 (2025)** category
   and **MITRE ATLAS** technique; the harness emits an OWASP coverage/risk report (`--report`).
-- **Response scanning + streaming** — inspects model output too, including SSE token streams: events
-  are parsed, the reply text and tool-call arguments are reassembled per choice / content block and
-  scanned with the same output policy, and a small hold-back window keeps a secret split across delta
-  frames from reaching the client (clean streams are forwarded byte-for-byte).
+- **Request coverage** — every text-bearing request field is scanned as input: messages (strings or
+  OpenAI content-part arrays — `text` parts scanned, image/audio parts forwarded unchanged), OpenAI
+  `role: "tool"` results, the Anthropic `system` prompt, `tool_result` and `search_result` blocks,
+  `document` blocks with text sources (plain, nested content, or base64 `text/*`), and tool definitions
+  (`tools[].description` and the descriptions in their parameter schemas) on both endpoints. Documents
+  the proxy cannot read as text (PDF, URL or file sources) are forwarded uninspected, or refused with
+  `input.reject_unscannable_documents: true`.
+- **Response scanning + streaming** — inspects model output too, with one extraction model for
+  streamed and non-streamed replies: every choice's text and refusal, tool-call arguments (and the
+  legacy `function_call`), every Anthropic content block (`text`, `tool_use` input, `thinking`), and
+  non-200 upstream error bodies. For SSE token streams, events are parsed, the text is reassembled per
+  choice / content block and scanned with the same output policy, and a small hold-back window keeps a
+  secret split across delta frames from reaching the client (clean streams are forwarded byte-for-byte).
 - **Structured audit log** — one JSON line per request (decision, score, reasons, OWASP/ATLAS tags,
   latency).
 
@@ -766,6 +775,11 @@ injection:
     model_dir: models/injection   # ./scripts/fetch-model.sh injection
     threshold: 0.5          # P(injection) at/above which `block-ml-injection` fires
     optional: false         # false = refuse to start if the model can't load (fail-closed)
+
+input:
+  # Documents/files the proxy cannot read as text (PDF, URL or file-id sources) are forwarded
+  # uninspected by default; true refuses such requests (HTTP 400) instead.
+  reject_unscannable_documents: false
 ```
 
 An enabled model that can't be loaded — the injection classifier, or `output_moderation` with
