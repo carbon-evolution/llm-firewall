@@ -159,7 +159,7 @@ impl Default for Config {
 
 impl Config {
     pub fn from_yaml(s: &str) -> anyhow::Result<Self> {
-        let c: Config = serde_yaml::from_str(s)?;
+        let c: Config = serde_saphyr::from_str(s)?;
         c.validate()?;
         Ok(c)
     }

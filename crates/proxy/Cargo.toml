@@ -26,7 +26,7 @@ tower = { version = "0.5", features = ["util"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { workspace = true }
 serde_json = "1"
-serde_yaml = "0.9"
+serde-saphyr = "1.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
 anyhow = "1"

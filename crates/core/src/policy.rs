@@ -55,8 +55,8 @@ pub struct Decision {
 }
 
 impl PolicySet {
-    pub fn from_yaml(s: &str) -> Result<Self, serde_yaml::Error> {
-        serde_yaml::from_str(s)
+    pub fn from_yaml(s: &str) -> Result<Self, serde_saphyr::Error> {
+        serde_saphyr::from_str(s)
     }
 
     /// First matching rule wins; otherwise the default action.

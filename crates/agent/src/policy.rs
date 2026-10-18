@@ -204,12 +204,12 @@ pub struct AgentDecision {
 }
 
 impl AgentPolicySet {
-    pub fn from_yaml(s: &str) -> Result<Self, serde_yaml::Error> {
+    pub fn from_yaml(s: &str) -> Result<Self, serde_saphyr::Error> {
         use serde::de::Error as _;
-        let p: AgentPolicySet = serde_yaml::from_str(s)?;
+        let p: AgentPolicySet = serde_saphyr::from_str(s)?;
         if p.default == Verdict::Escalate {
             // Produce a real serde error rather than a panic or a silent fix.
-            return Err(serde_yaml::Error::custom(
+            return Err(serde_saphyr::Error::custom(
                 "policy 'default' cannot be 'escalate': there is no rule to take a fallback from",
             ));
         }

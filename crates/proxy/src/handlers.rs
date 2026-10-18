@@ -158,7 +158,7 @@ pub async fn chat_completions(
     );
     let (status, body) = match forward_json(&state, builder).await {
         Ok(pair) => pair,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if status != StatusCode::OK {
         return (status, Json(body)).into_response();
@@ -256,7 +256,7 @@ pub async fn messages(
     );
     let (status, body) = match forward_json(&state, builder).await {
         Ok(pair) => pair,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if status != StatusCode::OK {
         return (status, Json(body)).into_response();
@@ -319,11 +319,12 @@ pub async fn messages(
 // ------------------------------------------------------------------- shared bits
 
 /// Send a non-streaming upstream request and parse the JSON body. On transport/body
-/// failure returns a ready `Response` (respecting fail mode) via `Err`.
+/// failure returns a ready `Response` (respecting fail mode) via `Err`, boxed so the
+/// cold-path error does not bloat the `Result` (clippy::result_large_err).
 async fn forward_json(
     state: &Shared,
     builder: reqwest::RequestBuilder,
-) -> Result<(StatusCode, serde_json::Value), Response> {
+) -> Result<(StatusCode, serde_json::Value), Box<Response>> {
     let resp = match builder.send().await {
         Ok(r) => r,
         Err(e) => {
@@ -331,17 +332,21 @@ async fn forward_json(
                 FailMode::FailClosed => format!("upstream error (fail_closed): {e}"),
                 FailMode::FailOpen => "upstream error".to_string(),
             };
-            return Err((StatusCode::BAD_GATEWAY, Json(error_body(&msg))).into_response());
+            return Err(Box::new(
+                (StatusCode::BAD_GATEWAY, Json(error_body(&msg))).into_response(),
+            ));
         }
     };
     let status = StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     match resp.json::<serde_json::Value>().await {
         Ok(v) => Ok((status, v)),
-        Err(e) => Err((
-            StatusCode::BAD_GATEWAY,
-            Json(error_body(&format!("bad upstream body: {e}"))),
-        )
-            .into_response()),
+        Err(e) => Err(Box::new(
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(error_body(&format!("bad upstream body: {e}"))),
+            )
+                .into_response(),
+        )),
     }
 }
 
