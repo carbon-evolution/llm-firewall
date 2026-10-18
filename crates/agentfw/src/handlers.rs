@@ -323,7 +323,10 @@ pub async fn mcp(
 
     let hash = crate::mcp::manifest::manifest_hash(&req.tools);
     let pinned = st.manifests.get(&req.server);
-    let manifest_changed = matches!(&pinned, Some(old) if *old != hash);
+    let manifest_changed = matches!(
+        &pinned,
+        Some(old) if !crate::mcp::manifest::pin_matches(old, &req.tools, &hash)
+    );
     let names: Vec<String> = req.tools.iter().map(|t| t.name.clone()).collect();
     let shadowed = st.tools.shadows(&req.server, &names);
     let shadow = shadowed.is_some();

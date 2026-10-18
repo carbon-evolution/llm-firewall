@@ -118,8 +118,10 @@ supply chain, and reply-side masking. ZAP found no High or Medium issues (detail
 - ✅ Three-stage detector exists (`crates/core/src/detectors/injection/`): regex signatures, heuristics,
   optional DeBERTa classifier. Policy `block-high-injection` / `block-ml-injection` blocks with HTTP 400
   before anything reaches the upstream (`policies/default.yaml`); verified on a classic override phrase.
-- ✅ Normalization pre-pass (zero-width strip, NFKC + confusable folding; base64 opt-in) is on by default.
-  Verified: Cyrillic-homoglyph, zero-width-split and full-width variants of a known phrase are blocked.
+- ✅ Normalization pre-pass (zero-width strip, NFKD + combining-mark strip + confusable folding; base64
+  opt-in) is on by default. Verified: Cyrillic-homoglyph, zero-width-split, full-width and accented /
+  combining-mark variants of a known phrase are blocked (combining marks found by fuzzing, fixed in this PR;
+  no change in benign multilingual FPR).
   Benchmark (rule layer, safe-guard): obfuscated recall 0.0% → 14.5%, base64 0.0% → 30.6%, at 0.00% FPR
   on a multilingual benign control (README "Obfuscation resilience").
 - ✅ OpenAI `role: "tool"` messages and the Anthropic `system` prompt are scanned as input.
@@ -387,12 +389,12 @@ deployment profile (loopback/sidecar, TLS in front, enforce modes).
 
 See LLM03 for detail. RustSec clean for the built graph; lockfile committed; SHA-pinned actions;
 CodeQL + gitleaks + ClamAV + Dependabot; digest-pinned bases; cosign-signed release images with SLSA
-provenance and SBOM. **OpenSSF Scorecard 6.4/10**; remaining gaps: Code-Review 0 and Maintained 0
-(single maintainer, new repository), Fuzzing 0, CII Best Practices 0, Vulnerabilities 1 (the lockfile
-noise explained under LLM03), SAST 7 (CodeQL only recently added).
+provenance and SBOM; signed GitHub Releases with Sigstore bundles and build provenance (v0.3.0+);
+cargo-fuzz targets on PRs and weekly. **OpenSSF Scorecard** remaining gaps: Code-Review 0 and Maintained 0
+(single maintainer, new repository), CII Best Practices 0, Vulnerabilities 6 (the 4 documented `ml`-feature
+ignores explained under LLM03), SAST 7 (CodeQL only recently added).
 
-**Recommended:** clear the `quinn-proto` lockfile entry; add `cargo-fuzz` targets for the JSON request
-models, normalizer and detectors; apply for the OpenSSF Best Practices badge.
+**Recommended:** apply for the OpenSSF Best Practices badge.
 
 ### A04 — Cryptographic Failures · 🟠 Medium
 

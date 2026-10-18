@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Security
+- **MCP manifest pins use an unambiguous v2 hash** (`v2:` + SHA-256 over length-prefixed fields). The
+  old NUL-separated hash let two different manifests be crafted to collide (found by fuzzing). Existing
+  pins keep working: a legacy pin is compared with the legacy hash and silently re-pinned as v2 on the
+  next handshake, so upgrading raises no false drift alerts.
+- **Normalization strips combining marks** before confusable folding, so accented look-alikes
+  ("ígnore") no longer evade the keyword detectors (found by fuzzing).
+
 ## [0.3.0] - 2026-10-18
 
 The agent firewall: inspection of agent tool calls (Claude Code hooks, MCP, and tool blocks in

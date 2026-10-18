@@ -6,6 +6,7 @@
 use base64::Engine as _;
 use regex::Regex;
 use std::sync::LazyLock;
+use unicode_normalization::char::is_combining_mark;
 use unicode_normalization::UnicodeNormalization;
 
 /// Result of normalization. `changed` is true iff `text` differs from the input.
@@ -87,10 +88,15 @@ fn confusable_to_ascii(c: char) -> Option<char> {
     })
 }
 
-/// NFKC-normalize (folds fullwidth/ligatures/compatibility forms), then map script-mixing
-/// confusables (Cyrillic/Greek look-alikes) to their ASCII target.
+/// Compatibility-decompose (folds fullwidth/ligatures/compatibility forms), drop
+/// combining marks so accented look-alikes match ("ígnore" -> "ignore", found by the
+/// `detectors` fuzz target), recompose, then map script-mixing confusables
+/// (Cyrillic/Greek look-alikes) to their ASCII target. Only the normalized evasion
+/// pass sees this text; the original is always scanned and masked as-is.
 fn fold_confusables(text: &str) -> String {
-    text.nfkc()
+    let stripped: String = text.nfkd().filter(|&c| !is_combining_mark(c)).collect();
+    stripped
+        .nfc()
         .map(|c| confusable_to_ascii(c).unwrap_or(c))
         .collect()
 }
@@ -194,6 +200,18 @@ mod tests {
         // Cyrillic small i (U+0456) and Cyrillic e (U+0435).
         assert_eq!(fold_confusables("\u{0456}gnore"), "ignore");
         assert_eq!(fold_confusables("syst\u{0435}m"), "system");
+    }
+
+    #[test]
+    fn strips_combining_marks() {
+        assert_eq!(fold_confusables("\u{00ED}gnore"), "ignore"); // precomposed i-acute
+        assert_eq!(fold_confusables("i\u{0301}gnore"), "ignore"); // i + combining acute
+        assert_eq!(fold_confusables("s\u{0336}y\u{0336}stem"), "system"); // strikethrough
+    }
+
+    #[test]
+    fn keeps_hangul_syllables_intact() {
+        assert_eq!(fold_confusables("\u{D55C}\u{AE00}"), "\u{D55C}\u{AE00}");
     }
 
     #[test]
