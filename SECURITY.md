@@ -420,8 +420,9 @@ shape; add a regression test for each gap above.
   attaches SLSA provenance (`mode=max`) and an SBOM (`.github/workflows/release.yml`). `Cargo.lock` is
   committed.
 - ⚠️ ML model files have no pinning or hash verification, and are memory-mapped with `unsafe` (LLM04).
-- ⚠️ Branch protection on `main` only blocks force-push and deletion: no required status checks, no
-  required reviews, no required signed commits.
+- ✅ Branch protection on `main` requires 6 passing checks (test, deny, gitleaks, CodeQL rust/actions/
+  results) and verified signed commits, and blocks force-push and deletion. ⚠️ No required reviews
+  (single maintainer).
 - ⚠️ `deploy/Dockerfile` builds without `--locked`.
 
 **Recommended:** require the CI, deny, gitleaks and CodeQL checks and signed commits on `main`;
@@ -475,5 +476,5 @@ enabled feature cannot initialize; recover from a poisoned mutex or use `parking
 | Signed release image (cosign keyless), SLSA provenance, SBOM | `release.yml` | every `v*` tag |
 | OWASP ZAP baseline + API scan | manual, this assessment | 2026-10-18 (not yet in CI) |
 
-**OpenSSF Scorecard:** 6.4/10 (2026-10-18). Branch protection does not yet require status checks or
-reviews, so the checks above are informative rather than merge-blocking.
+**OpenSSF Scorecard:** 6.4/10 (2026-10-18). Branch protection requires the CI, cargo-deny, gitleaks
+and CodeQL checks above (merge-blocking) and signed commits, but not reviews.
