@@ -1,0 +1,1 @@
+{"model":"claude-3-5-sonnet","max_tokens":1024,"system":"you are helpful","messages":[{"role":"user","content":"hello"},{"role":"user","content":[{"type":"text","text":"reach me at bob@example.org"}]}]}

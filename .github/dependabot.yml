@@ -10,6 +10,15 @@ updates:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
 
+  # The cargo-fuzz harnesses are a separate workspace with their own Cargo.lock.
+  - package-ecosystem: cargo
+    directory: /fuzz
+    schedule:
+      interval: weekly
+    groups:
+      fuzz-cargo:
+        patterns: ["*"]
+
   # Keeps SHA-pinned workflow actions (and their "# vX.Y.Z" comments) current.
   - package-ecosystem: github-actions
     directory: /

@@ -1,0 +1,90 @@
+name: fuzz
+
+# cargo-fuzz (libFuzzer + AddressSanitizer) over the code that parses untrusted
+# input: proxy request bodies and SSE streams, the detector/normalizer/masking pipeline, policy
+# and config YAML, agentfw hook payloads and MCP manifests. Targets live in fuzz/
+# (a separate nightly-only workspace with its own Cargo.lock). See docs/fuzzing.md.
+on:
+  pull_request:
+    paths:
+      - "crates/**"
+      - "fuzz/**"
+      - "policies/**"
+      - "Cargo.lock"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "41 3 * * 0" # weekly, longer runs
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Dated nightly so a broken nightly cannot fail unrelated PRs; bump deliberately.
+  FUZZ_TOOLCHAIN: nightly-2026-10-01
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - detectors
+          - openai_request
+          - anthropic_request
+          - sse_stream
+          - policy_yaml
+          - mcp_manifest
+          - agent_hook
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # dtolnay/rust-toolchain has no release tags; pinned to a master commit.
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master 2026-10-16
+        with:
+          toolchain: ${{ env.FUZZ_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: fuzz
+          key: ${{ env.FUZZ_TOOLCHAIN }}
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-fuzz@0.13.2
+      # Fails if fuzz/Cargo.lock is stale, so the build uses exactly the committed pins.
+      - name: Verify lockfile
+        working-directory: fuzz
+        run: cargo "+${FUZZ_TOOLCHAIN}" fetch --locked
+      - name: Build target
+        working-directory: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo "+${FUZZ_TOOLCHAIN}" fuzz build "${TARGET}"
+      # PRs: ~2 minutes per target. Weekly: 15 minutes per target. New inputs go to a
+      # scratch corpus (first dir); the committed seeds are only read.
+      - name: Run target
+        working-directory: fuzz
+        env:
+          TARGET: ${{ matrix.target }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          secs=120
+          if [ "${EVENT}" = "schedule" ] || [ "${EVENT}" = "workflow_dispatch" ]; then secs=900; fi
+          mkdir -p "corpus-work/${TARGET}"
+          cargo "+${FUZZ_TOOLCHAIN}" fuzz run "${TARGET}" "corpus-work/${TARGET}" "corpus/${TARGET}" -- \
+            -dict=llm-firewall.dict -max_total_time="${secs}" -timeout=10 -rss_limit_mb=2048 \
+            -print_final_stats=1
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -1,0 +1,83 @@
+# cargo-fuzz harnesses for llm-firewall. Deliberately its OWN workspace (and in the
+# root workspace's `exclude`), so the stable build, `cargo test --all` and
+# `cargo deny check` at the repo root never see it. Dependency versions are pinned by
+# the committed fuzz/Cargo.lock; CI builds with --locked. Needs nightly:
+#   cargo +nightly fuzz run <target>
+# See docs/fuzzing.md.
+[package]
+name = "llm-firewall-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+llm-firewall-core = { path = "../crates/core" }
+llm-firewall-agent = { path = "../crates/agent" }
+llm-firewall = { path = "../crates/proxy" }
+agentfw = { path = "../crates/agentfw" }
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[lib]
+path = "src/lib.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "detectors"
+path = "fuzz_targets/detectors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "openai_request"
+path = "fuzz_targets/openai_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "anthropic_request"
+path = "fuzz_targets/anthropic_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "policy_yaml"
+path = "fuzz_targets/policy_yaml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mcp_manifest"
+path = "fuzz_targets/mcp_manifest.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_hook"
+path = "fuzz_targets/agent_hook.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sse_stream"
+path = "fuzz_targets/sse_stream.rs"
+test = false
+doc = false
+bench = false
