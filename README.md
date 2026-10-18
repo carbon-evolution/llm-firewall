@@ -11,7 +11,10 @@ A pure-Rust **firewall for LLMs and the agents built on them**. Two layers, one 
    says: every tool call, every tool result, every subagent spawn. Catches indirect prompt injection,
    data exfiltration, destructive actions, and subagent privilege escalation.
 
-![CI](https://github.com/carbon-evolution/llm-firewall/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/carbon-evolution/llm-firewall/actions/workflows/ci.yml/badge.svg)](https://github.com/carbon-evolution/llm-firewall/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/carbon-evolution/llm-firewall/actions/workflows/codeql.yml/badge.svg)](https://github.com/carbon-evolution/llm-firewall/actions/workflows/codeql.yml)
+[![Malware scan](https://github.com/carbon-evolution/llm-firewall/actions/workflows/malware.yml/badge.svg)](https://github.com/carbon-evolution/llm-firewall/actions/workflows/malware.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/carbon-evolution/llm-firewall/badge)](https://scorecard.dev/viewer/?uri=github.com/carbon-evolution/llm-firewall)
 ![License](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Release](https://img.shields.io/github/v/release/carbon-evolution/llm-firewall?sort=semver)
 ![GHCR](https://img.shields.io/badge/ghcr.io-container-2496ed?logo=docker&logoColor=white)
@@ -385,6 +388,19 @@ docker pull ghcr.io/carbon-evolution/llm-firewall:latest
 docker run -p 8080:8080 -e LLM_FW_OPENAI_BASE=https://api.openai.com \
   ghcr.io/carbon-evolution/llm-firewall:latest
 ```
+
+**Verify the image signature** — release images are signed keylessly with
+[cosign](https://docs.sigstore.dev/cosign/) by the `release` workflow, and carry SLSA provenance and
+an SBOM as attestations. Check that an image was built by this repo's release workflow from a version
+tag before running it:
+
+```bash
+cosign verify ghcr.io/carbon-evolution/llm-firewall:latest \
+  --certificate-identity-regexp '^https://github\.com/carbon-evolution/llm-firewall/\.github/workflows/release\.yml@refs/tags/v' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+(Images published before signing was added are unsigned; for those, build from source instead.)
 
 …or build it yourself:
 

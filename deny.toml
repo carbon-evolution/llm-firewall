@@ -1,0 +1,55 @@
+# cargo-deny policy (https://embarkstudios.github.io/cargo-deny/).
+# Run locally with `cargo deny --all-features check`; CI runs the same in the `deny` job.
+
+[graph]
+all-features = true
+
+[advisories]
+# Every RustSec vulnerability fails the check. Unmaintained crates fail too, for
+# the whole tree: a firewall should not quietly depend on code nobody patches.
+# Any exception must be added to `ignore` with the advisory ID and a reason.
+unmaintained = "all"
+yanked = "deny"
+ignore = [
+    # paste is a compile-time proc-macro (no runtime code) pulled in only by the
+    # optional `ml` feature via candle-core -> gemm; current gemm/candle releases
+    # still depend on it and RustSec lists no maintained replacement upstream.
+    { id = "RUSTSEC-2024-0436", reason = "paste: transitive proc-macro via candle/gemm (ml feature), no upstream fix" },
+    # zip 1.x comes only from the optional `ml` feature via candle-core 0.8.4.
+    # All three advisories are in archive *extraction* (ZipArchive::extract /
+    # ZipStreamReader::extract). candle-core only opens and reads entries
+    # (npy/pickle loaders) and writes .npz; it never extracts, and
+    # llm-firewall loads its models from .safetensors. Fixed only in zip >= 9;
+    # even the latest candle (0.11) requires zip ^8.6. Remove these when
+    # candle moves to zip >= 9.
+    { id = "RUSTSEC-2026-0367", reason = "zip extract SUID/SGID: extract() unused (candle only reads entries; ml feature); fix needs zip>=9, unreachable via candle" },
+    { id = "RUSTSEC-2026-0368", reason = "zip extract symlink escape: extract() unused (candle only reads entries; ml feature); fix needs zip>=9, unreachable via candle" },
+    { id = "RUSTSEC-2026-0369", reason = "zip extract permissions via symlink: extract() unused (candle only reads entries; ml feature); fix needs zip>=9, unreachable via candle" },
+]
+
+[licenses]
+# Only the licenses the dependency tree actually needs (checked with
+# `cargo deny list`). Dual-licensed crates resolve to one of these; adding a new
+# license here is a deliberate review step.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "MPL-2.0",             # option-ext (via dirs)
+    "CDLA-Permissive-2.0", # webpki-roots (Mozilla CA bundle data)
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "warn"
+# Workspace crates depend on each other by `path` with no version. cargo-deny only
+# exempts those for `publish = false` crates, so this stays a warning for now.
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
