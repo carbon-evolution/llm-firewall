@@ -17,6 +17,7 @@ use crate::audit::AuditRecord;
 use crate::config::{Config, FailMode};
 use crate::openai::ChatRequest;
 use crate::pipeline::{decide_input, decide_input_anthropic, decide_output};
+use crate::stream::{block_frame, Protocol, StreamInspector};
 
 pub struct AppState {
     pub firewall: Firewall,
@@ -136,6 +137,20 @@ pub async fn chat_completions(
 
     let url = format!("{}/v1/chat/completions", state.config.upstream.openai_base);
     if decision.request.stream {
+        // The input verdict is final here; record it before the stream starts.
+        audit_allow(
+            &request_id,
+            decision.score,
+            decision.reasons,
+            decision.owasp,
+            decision.atlas,
+            started,
+        );
+        let tool_results = if state.config.agent_inspection.enabled {
+            crate::agent_scan::openai_tool_results(&decision.request)
+        } else {
+            Vec::new()
+        };
         let builder = forward_headers(
             state.http.post(&url).json(&decision.request),
             &headers,
@@ -146,7 +161,8 @@ pub async fn chat_completions(
             builder,
             request_id,
             started,
-            OPENAI_BLOCK_FRAME,
+            Protocol::OpenAi,
+            tool_results,
         )
         .await;
     }
@@ -173,7 +189,7 @@ pub async fn chat_completions(
     }
 
     // Agent layer: inspect the response's tool calls against the request's tool
-    // results. Non-streaming only (this is past the stream early-return).
+    // results. (Streams run the same check at end of stream in `proxy_stream`.)
     if state.config.agent_inspection.enabled {
         let results = crate::agent_scan::openai_tool_results(&decision.request);
         let calls = crate::agent_scan::openai_tool_calls(&body);
@@ -184,7 +200,7 @@ pub async fn chat_completions(
     }
 
     // Output content moderation: restrict a harmful reply regardless of backend.
-    // Non-streaming only (v1); `block` refuses, `flag` audits and forwards.
+    // `block` refuses, `flag` audits and forwards. (Streams: see `proxy_stream`.)
     if !decision.request.stream {
         if let crate::moderation::GateVerdict::Harmful { categories, action } =
             state.moderation.check(assistant)
@@ -234,6 +250,20 @@ pub async fn messages(
 
     let url = format!("{}/v1/messages", state.config.upstream.anthropic_base);
     if decision.request.stream {
+        audit_allow(
+            &request_id,
+            decision.score,
+            decision.reasons,
+            decision.owasp,
+            decision.atlas,
+            started,
+        );
+        let tool_results = if state.config.agent_inspection.enabled {
+            let req_value = serde_json::to_value(&decision.request).unwrap_or_default();
+            crate::agent_scan::anthropic_tool_results(&req_value)
+        } else {
+            Vec::new()
+        };
         let builder = forward_headers(
             state.http.post(&url).json(&decision.request),
             &headers,
@@ -244,7 +274,8 @@ pub async fn messages(
             builder,
             request_id,
             started,
-            ANTHROPIC_BLOCK_FRAME,
+            Protocol::Anthropic,
+            tool_results,
         )
         .await;
     }
@@ -280,7 +311,7 @@ pub async fn messages(
     }
 
     // Agent layer: inspect the response's tool_use blocks against the request's
-    // tool_result blocks. Non-streaming only.
+    // tool_result blocks. (Streams: see `proxy_stream`.)
     if state.config.agent_inspection.enabled {
         let req_value = serde_json::to_value(&decision.request).unwrap_or_default();
         let results = crate::agent_scan::anthropic_tool_results(&req_value);
@@ -291,7 +322,7 @@ pub async fn messages(
         }
     }
 
-    // Output content moderation (see the OpenAI path). Non-streaming only.
+    // Output content moderation (see the OpenAI path).
     if !decision.request.stream {
         if let crate::moderation::GateVerdict::Harmful { categories, action } =
             state.moderation.check(&assistant)
@@ -350,20 +381,18 @@ async fn forward_json(
     }
 }
 
-const OPENAI_BLOCK_FRAME: &[u8] =
-    b"data: {\"error\":{\"message\":\"blocked by llm-firewall output policy\",\"type\":\"llm_firewall_block\"}}\n\ndata: [DONE]\n\n";
-const ANTHROPIC_BLOCK_FRAME: &[u8] =
-    b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"blocked by llm-firewall output policy\"}}\n\n";
-
-/// Forward the upstream SSE stream VERBATIM (byte-for-byte), scanning a sliding tail
-/// window for output-policy violations. On violation we emit `block_frame` and stop;
-/// otherwise upstream framing is preserved exactly.
+/// Proxy an upstream SSE stream through the [`StreamInspector`]: events are parsed,
+/// their text reassembled per choice / content block and scanned with the same output
+/// policy as non-streamed replies, and released (verbatim, in order) only once the
+/// text they carry is outside the hold-back window. On a block the client gets a
+/// terminal error event in the protocol's format and the upstream is dropped.
 async fn proxy_stream(
     state: Shared,
     builder: reqwest::RequestBuilder,
     request_id: String,
     started: Instant,
-    block_frame: &'static [u8],
+    protocol: Protocol,
+    tool_results: Vec<String>,
 ) -> Response {
     let upstream = match builder.send().await {
         Ok(r) => r,
@@ -372,6 +401,8 @@ async fn proxy_stream(
         }
     };
 
+    let status =
+        StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let content_type = upstream
         .headers()
         .get(CONTENT_TYPE)
@@ -379,44 +410,87 @@ async fn proxy_stream(
         .unwrap_or("text/event-stream")
         .to_string();
 
-    let window = state.config.stream_window.max(16);
+    let agent_enforce =
+        state.config.agent_inspection.enabled && state.config.agent_inspection.enforce;
+    let mut inspector = StreamInspector::new(
+        protocol,
+        state.config.effective_holdback(),
+        agent_enforce,
+        state.moderation.blocks(),
+    );
     let mut byte_stream = upstream.bytes_stream();
 
     let body = async_stream::stream! {
-        let mut acc = String::new();
-        while let Some(chunk) = byte_stream.next().await {
-            let Ok(bytes) = chunk else { break };
-            acc.push_str(&String::from_utf8_lossy(&bytes));
-            // Keep only the tail window; trim on a char boundary so we never panic.
-            if acc.len() > window * 4 {
-                let mut cut = acc.len() - window * 4;
-                while cut < acc.len() && !acc.is_char_boundary(cut) {
-                    cut += 1;
+        let mut upstream_failed = false;
+        loop {
+            match byte_stream.next().await {
+                Some(Ok(bytes)) => match inspector.push(&state.firewall, &bytes) {
+                    Ok(out) => {
+                        if !out.is_empty() {
+                            yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(out));
+                        }
+                    }
+                    Err(reason) => {
+                        // Returning drops `byte_stream`, which closes the upstream.
+                        audit_output_block(&request_id, &reason, started);
+                        yield Ok(block_frame(protocol, &reason).into());
+                        return;
+                    }
+                },
+                Some(Err(e)) => {
+                    tracing::warn!(error = %e, request_id = %request_id, "upstream stream error");
+                    upstream_failed = true;
+                    break;
                 }
-                acc.drain(..cut);
+                None => break,
             }
-            if decide_output(&state.firewall, &acc).is_some() {
-                AuditRecord {
-                    request_id: request_id.clone(),
-                    direction: "output".into(),
-                    decision: "block".into(),
-                    score: 0,
-                    reasons: vec!["output policy violation".into()],
-                    owasp: Vec::new(),
-                    atlas: Vec::new(),
-                    latency_ms: started.elapsed().as_millis(),
-                }
-                .emit();
-                yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(block_frame));
+        }
+
+        // End of upstream: full scan of every channel, then the end-of-reply checks.
+        if let Err(reason) = inspector.finish(&state.firewall) {
+            audit_output_block(&request_id, &reason, started);
+            yield Ok(block_frame(protocol, &reason).into());
+            return;
+        }
+        if state.config.agent_inspection.enabled {
+            let calls = inspector.tool_calls();
+            if let Some(reason) = agent_refuse_reason(&state, &request_id, tool_results, calls) {
+                audit_output_block(&request_id, &reason, started);
+                yield Ok(block_frame(protocol, &reason).into());
                 return;
             }
-            // Pass the upstream chunk through VERBATIM (preserves SSE framing).
-            yield Ok(bytes);
         }
+        let reply = inspector.reply_text();
+        if !reply.is_empty() {
+            if let crate::moderation::GateVerdict::Harmful { categories, action } =
+                state.moderation.check(&reply)
+            {
+                tracing::warn!(?categories, ?action, "output moderation: harmful streamed reply");
+                if action == crate::config::ModerationAction::Block {
+                    let msg = state.moderation.refusal_message().to_string();
+                    audit_output_block(&request_id, &msg, started);
+                    yield Ok(block_frame(protocol, &msg).into());
+                    return;
+                }
+            }
+        }
+
+        let rest = inspector.drain_all();
+        if !rest.is_empty() {
+            yield Ok(rest.into());
+        }
+        let decision = if upstream_failed && state.config.fail_mode == FailMode::FailClosed {
+            // Everything received was scanned and released; tell the client the reply
+            // is truncated rather than ending as if it were complete.
+            yield Ok(block_frame(protocol, "upstream stream interrupted").into());
+            "stream_error"
+        } else {
+            "stream_done"
+        };
         AuditRecord {
             request_id,
             direction: "output".into(),
-            decision: "stream_done".into(),
+            decision: decision.into(),
             score: 0,
             reasons: vec![],
             owasp: Vec::new(),
@@ -427,7 +501,7 @@ async fn proxy_stream(
     };
 
     Response::builder()
-        .status(StatusCode::OK)
+        .status(status)
         .header(CONTENT_TYPE, content_type)
         .body(Body::from_stream(body))
         .unwrap()

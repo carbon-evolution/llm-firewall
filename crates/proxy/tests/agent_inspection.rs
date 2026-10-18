@@ -111,3 +111,83 @@ async fn disabled_agent_inspection_passes_through() {
         "response forwarded unchanged: {body}"
     );
 }
+
+/// The same tool call, streamed as OpenAI chunks with the arguments split over frames.
+fn streamed_secret_tool_call() -> String {
+    let args = response_with_secret_tool_call()["choices"][0]["message"]["tool_calls"][0]
+        ["function"]["arguments"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (a, rest) = args.split_at(20);
+    let (b, c) = rest.split_at(30);
+    let mut body = String::new();
+    for (i, part) in [a, b, c].into_iter().enumerate() {
+        let mut f = serde_json::json!({ "arguments": part });
+        if i == 0 {
+            f["name"] = "bash".into();
+        }
+        let v = serde_json::json!({"choices":[{"index":0,"delta":{"tool_calls":[
+            {"index":0,"id":"c1","type":"function","function":f}]},"finish_reason":null}]});
+        body.push_str(&format!("data: {v}\n\n"));
+    }
+    body.push_str("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\ndata: [DONE]\n\n");
+    body
+}
+
+async fn streaming_upstream() -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(streamed_secret_tool_call(), "text/event-stream"),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn post_chat_stream(st: Arc<AppState>) -> String {
+    let body = serde_json::json!({
+        "model": "gpt-4o", "stream": true,
+        "messages": [{"role":"user","content":"do the thing"}]
+    });
+    let resp = app(st)
+        .oneshot(
+            Request::post("/v1/chat/completions")
+                .header("content-type", "application/json")
+                .body(axum::body::Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[tokio::test]
+async fn a_denied_streamed_tool_call_is_refused_when_enforcing() {
+    let server = streaming_upstream().await;
+    let got = post_chat_stream(state(server.uri(), true, true)).await;
+    assert!(
+        !got.contains("tool_calls"),
+        "no part of the denied tool call may be released: {got}"
+    );
+    assert!(
+        got.contains("llm_firewall_block"),
+        "expected a block event: {got}"
+    );
+    assert!(got.ends_with("data: [DONE]\n\n"));
+}
+
+#[tokio::test]
+async fn a_streamed_tool_call_passes_in_shadow_mode() {
+    let server = streaming_upstream().await;
+    let got = post_chat_stream(state(server.uri(), true, false)).await;
+    assert_eq!(
+        got,
+        streamed_secret_tool_call(),
+        "shadow mode forwards unchanged"
+    );
+}

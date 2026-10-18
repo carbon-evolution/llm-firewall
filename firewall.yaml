@@ -3,4 +3,5 @@ upstream:
   openai_base: "https://api.openai.com"
 policy_file: "policies/default.yaml"
 fail_mode: fail_closed
-stream_window: 64
+# Streaming: reassembled reply text held back until scanned in context (bytes; floor 64).
+stream_holdback_bytes: 256

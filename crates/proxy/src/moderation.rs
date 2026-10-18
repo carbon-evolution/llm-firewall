@@ -115,6 +115,25 @@ impl ModerationGate {
         GateVerdict::Allow
     }
 
+    /// True when the gate is live (enabled, built with `ml`, model loaded).
+    pub fn is_live(&self) -> bool {
+        #[cfg(feature = "ml")]
+        {
+            self.cfg.enabled && self.classifier.is_some()
+        }
+        #[cfg(not(feature = "ml"))]
+        {
+            false
+        }
+    }
+
+    /// True when a harmful reply would be refused (`action: block` on a live gate).
+    /// Streams are then held in full until moderated, since a refusal after most of
+    /// the text was delivered would be meaningless.
+    pub fn blocks(&self) -> bool {
+        self.is_live() && self.cfg.action == ModerationAction::Block
+    }
+
     pub fn refusal_message(&self) -> &str {
         &self.cfg.refusal_message
     }
