@@ -26,6 +26,9 @@ concurrency:
 env:
   # Dated nightly so a broken nightly cannot fail unrelated PRs; bump deliberately.
   FUZZ_TOOLCHAIN: nightly-2026-10-01
+  # Explicit: the cargo-fuzz binary install-action fetches is a static musl build, and
+  # cargo-fuzz defaults to its OWN host triple, which ASan cannot target.
+  FUZZ_TRIPLE: x86_64-unknown-linux-gnu
 
 jobs:
   fuzz:
@@ -65,7 +68,7 @@ jobs:
         working-directory: fuzz
         env:
           TARGET: ${{ matrix.target }}
-        run: cargo "+${FUZZ_TOOLCHAIN}" fuzz build "${TARGET}"
+        run: cargo "+${FUZZ_TOOLCHAIN}" fuzz build --target "${FUZZ_TRIPLE}" "${TARGET}"
       # PRs: ~2 minutes per target. Weekly: 15 minutes per target. New inputs go to a
       # scratch corpus (first dir); the committed seeds are only read.
       - name: Run target
@@ -77,7 +80,7 @@ jobs:
           secs=120
           if [ "${EVENT}" = "schedule" ] || [ "${EVENT}" = "workflow_dispatch" ]; then secs=900; fi
           mkdir -p "corpus-work/${TARGET}"
-          cargo "+${FUZZ_TOOLCHAIN}" fuzz run "${TARGET}" "corpus-work/${TARGET}" "corpus/${TARGET}" -- \
+          cargo "+${FUZZ_TOOLCHAIN}" fuzz run --target "${FUZZ_TRIPLE}" "${TARGET}" "corpus-work/${TARGET}" "corpus/${TARGET}" -- \
             -dict=llm-firewall.dict -max_total_time="${secs}" -timeout=10 -rss_limit_mb=2048 \
             -print_final_stats=1
       - name: Upload crash artifacts
